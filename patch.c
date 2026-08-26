@@ -2,6 +2,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <distorm.h>
+
+// #include "Zydis/Zydis.h"
+
 
 #define align_up(value, alignment) (((value) + (alignment) - 1) / (alignment)) * (alignment)
 #define jmp_calc_rel32(target_addr, current_addr) (target_addr) - ((current_addr) + 5)
@@ -9,6 +13,8 @@
 #define calc_va(nt, sec, offset) (nt)->OptionalHeader.ImageBase + (sec)->VirtualAddress + (offset)
 
 #define calc_available_sections(free_space) (int)((free_space) / sizeof(IMAGE_SECTION_HEADER))
+
+
 
 typedef unsigned char u8;
 
@@ -27,11 +33,13 @@ typedef struct {
 } PE;
 
 
-IMAGE_SECTION_HEADER *find_section(IMAGE_SECTION_HEADER *sections, WORD section_count, const char *searched_name)
+IMAGE_SECTION_HEADER *find_section(PE *pe, const char *searched_name)
 {
-    for (int i = 0; i < section_count; i++)
+    
+    
+    for (int i = 0; i < pe->nt->FileHeader.NumberOfSections; i++)
     {
-        IMAGE_SECTION_HEADER *s = &sections[i];
+        IMAGE_SECTION_HEADER *s = &pe->sections[i];
         
         if (strcmp(s->Name, searched_name) == 0)
             return s;
@@ -254,6 +262,8 @@ int main(void) {
 
 
     PE p1;
+    PE *pe = &p1;
+    
     int res;
     
     
@@ -263,8 +273,146 @@ int main(void) {
         return 1;
     }
     
+    IMAGE_SECTION_HEADER *text = find_section(&p1, ".text");
+    
+    //printf("text section: %d, PhysicalAddress: %d, PointerToRawData: %d, SizeOfRawData: %d\n", text, text->Misc.PhysicalAddress, text->PointerToRawData, text->SizeOfRawData);
 
-    add_section(&p1, "patched.exe", ".patch", payload, sizeof(payload)); 
+
+    size_t offset = text->PointerToRawData;
+    size_t end    = offset + text->SizeOfRawData;
+    
+
+    while (offset < end)
+    {
+        _DecodedInst instruction;
+
+        unsigned int decoded = 0;
+
+        _DecodeResult result = distorm_decode64(
+            offset,
+            pe->file + offset,
+            (unsigned int)(end - offset),
+            Decode64Bits,
+            &instruction,
+            1,
+            &decoded
+        );
+
+        if (result == DECRES_INPUTERR || decoded == 0)
+        {
+            printf(
+                "FAIL offset=0x%zx remaining=%zu result=%d\n",
+                offset,
+                end - offset,
+                result
+            );
+
+            printf("bytes:");
+            for (size_t i = 0; i < 16 && offset + i < end; i++)
+                printf(" %02X", pe->file[offset + i]);
+            printf("\n");
+
+            break;
+        }
+
+        printf(
+            "0x%zx: length=%u, %s %s\n",
+            offset,
+            instruction.size,
+            instruction.mnemonic.p,
+            instruction.operands.p
+        );
+
+        offset += instruction.size;
+    }
+
+
+
+    /*
+    
+    ZydisDecoder   decoder;
+    ZydisFormatter formatter;
+
+    if (!ZYAN_SUCCESS(ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64)))
+        return 1;
+
+    if (!ZYAN_SUCCESS(ZydisFormatterInit(&formatter, ZYDIS_FORMATTER_STYLE_INTEL)))
+        return 1;
+    
+    while (offset < end)
+    {
+        ZydisDecodedInstruction instruction;
+        
+        ZyanStatus status = ZydisDecoderDecodeInstruction(
+            &decoder,
+            NULL, // context
+            pe->file + offset, // buffer (const void *)
+            end - offset, // length of the buffer
+            &instruction
+        );
+        
+        
+        if (!ZYAN_SUCCESS(status))
+        {
+printf("offset=0x%zx remaining=%zu status=0x%08X\n",
+    offset, end - offset, (unsigned int)status);
+            break;
+        }
+
+        
+        ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
+
+        status = ZydisDecoderDecodeFull(
+            &decoder,
+            pe->file + offset, // buffer
+            end - offset, // length
+            &instruction,
+            operands
+        );
+
+        if (!ZYAN_SUCCESS(status))
+        {
+            printf("Operand decode error at offset 0x%zx\n", offset);
+            break;
+        }
+        
+        
+        char text[256];
+
+        status = ZydisFormatterFormatInstruction(
+            &formatter,
+            &instruction,
+            operands,
+            instruction.operand_count_visible,
+            text,
+            sizeof(text),
+            (ZyanU64)offset,
+            NULL
+        );
+
+        if (!ZYAN_SUCCESS(status))
+        {
+            printf("Format error at offset 0x%zx\n", offset);
+            break;
+        }
+
+        printf("%04zx  ", offset);
+
+        for (unsigned int i = 0; i < instruction.length; i++)
+            printf("%02X ", pe->file[offset + i]);
+
+        for (unsigned int i = instruction.length; i < 12; i++)
+            printf("   ");
+
+        printf(" %s\n", text);
+        
+
+        offset += instruction.length;
+    }
+    
+    */
+
+    // add_section(&p1, "patched.exe", ".patch", payload, sizeof(payload)); 
     
 
     
