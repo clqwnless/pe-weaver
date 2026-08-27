@@ -32,6 +32,48 @@ typedef struct {
     const char *path;
 } PE;
 
+typedef struct {
+    uint8_t  dispOffset;
+    uint8_t  dispSize;
+    uint64_t fileOffset;
+    uint64_t oldTarget;
+} RelocUnit; // relocation unit
+
+
+
+/*
+example:
+
+A: 0x1000
+B: 0x1003
+C: 0x1006
+
+insert 3 bytes (addr0=0x1000, delta=3):
+
+X: 0x1000
+A: 0x1003
+B: 0x1006
+C: 0x1009
+
+*/
+
+typedef struct {
+    uint64_t addr0;
+    uint32_t delta; // in bytes
+} RelocShift;
+
+
+typedef struct {
+    RelocUnit  units[100000];
+    RelocShift shifts[1000];
+    
+    uint64_t units_len;
+    uint64_t shifts_len;
+} Reloc;
+
+
+Reloc reloc = {.units_len=0, .shifts_len=0};
+
 
 IMAGE_SECTION_HEADER *find_section(PE *pe, const char *searched_name)
 {
@@ -257,8 +299,53 @@ int add_section(PE *pe, const char *output, const char *name, const unsigned cha
     return 1;
 }
 
+
+uint64_t map_address(uint64_t old)
+{
+    /*
+    example:
+    
+    old=0x1005
+    
+    shift:
+    
+    addr0 = 0x1000
+    len   = 3
+    
+    */
+    
+    uint64_t result = old;
+    
+    for (uint64_t i = 0; i < reloc.shifts_len; ++i)
+    {
+        RelocShift shift = reloc.shifts[i];
+        
+        //printf("shift.addr0=%d, shift.delta=%d\n", shift.addr0, shift.delta);
+        
+        if (old >= shift.addr0)
+            result += shift.delta;
+    }
+    
+    return result;
+}
+
+
 int main(void) {
     unsigned char payload[] = { 0x48, 0x31, 0xC0, 0xC3 };
+
+    
+    reloc.shifts[0].addr0 = 0x1005;
+    reloc.shifts[0].delta = 3;
+    
+    reloc.shifts[1].addr0 = 0x1008;
+    reloc.shifts[1].delta = 5;
+    
+    reloc.shifts_len = 2;
+
+    printf("mapped addr: %0X\n", map_address(0x1008));
+    
+    return 1;
+    
 
 
     PE p1;
@@ -300,25 +387,19 @@ int main(void) {
 
         _DecodeResult r = distorm_decompose64(&ci, insts, 1, &count);
 
-        /*
-        printf(
-            "offset=%zx len=%d result=%d count=%u\n",
-            offset,
-            ci.codeLen,
-            r,
-            count
-        );
-        */
+        
 
         if (count == 0)
             break;
 
         _DInst *di = &insts[0];
         
-        printf("  %llx size=%u, disp=%llx, dispOffset=%d\n", (unsigned long long)di->addr, di->size, di->disp, di->dispOffset);
+        printf("  %llx, offset=%zu size=%u, disp=%llx, dispOffset=%d\n", (unsigned long long)di->addr, offset, di->size, di->disp, di->dispOffset);
 
         if (di->flags & FLAG_RIP_RELATIVE) {
             uint64_t target = INSTRUCTION_GET_RIP_TARGET(di);
+            
+            
             printf("    RIP: %llx -> %llx\n", (unsigned long long)di->addr, (unsigned long long)target);
         }
 
@@ -342,89 +423,7 @@ int main(void) {
     }
 
 
-    /*
     
-    ZydisDecoder   decoder;
-    ZydisFormatter formatter;
-
-    if (!ZYAN_SUCCESS(ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64)))
-        return 1;
-
-    if (!ZYAN_SUCCESS(ZydisFormatterInit(&formatter, ZYDIS_FORMATTER_STYLE_INTEL)))
-        return 1;
-    
-    while (offset < end)
-    {
-        ZydisDecodedInstruction instruction;
-        
-        ZyanStatus status = ZydisDecoderDecodeInstruction(
-            &decoder,
-            NULL, // context
-            pe->file + offset, // buffer (const void *)
-            end - offset, // length of the buffer
-            &instruction
-        );
-        
-        
-        if (!ZYAN_SUCCESS(status))
-        {
-printf("offset=0x%zx remaining=%zu status=0x%08X\n",
-    offset, end - offset, (unsigned int)status);
-            break;
-        }
-
-        
-        ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
-
-        status = ZydisDecoderDecodeFull(
-            &decoder,
-            pe->file + offset, // buffer
-            end - offset, // length
-            &instruction,
-            operands
-        );
-
-        if (!ZYAN_SUCCESS(status))
-        {
-            printf("Operand decode error at offset 0x%zx\n", offset);
-            break;
-        }
-        
-        
-        char text[256];
-
-        status = ZydisFormatterFormatInstruction(
-            &formatter,
-            &instruction,
-            operands,
-            instruction.operand_count_visible,
-            text,
-            sizeof(text),
-            (ZyanU64)offset,
-            NULL
-        );
-
-        if (!ZYAN_SUCCESS(status))
-        {
-            printf("Format error at offset 0x%zx\n", offset);
-            break;
-        }
-
-        printf("%04zx  ", offset);
-
-        for (unsigned int i = 0; i < instruction.length; i++)
-            printf("%02X ", pe->file[offset + i]);
-
-        for (unsigned int i = instruction.length; i < 12; i++)
-            printf("   ");
-
-        printf(" %s\n", text);
-        
-
-        offset += instruction.length;
-    }
-    
-    */
 
     // add_section(&p1, "patched.exe", ".patch", payload, sizeof(payload)); 
     
