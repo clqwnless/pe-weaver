@@ -8,7 +8,7 @@
 
 
 #define align_up(value, alignment) (((value) + (alignment) - 1) / (alignment)) * (alignment)
-#define calc_rav(target_addr, current_addr, current_inst_bytes) (target_addr) - ((current_addr) + (current_inst_bytes))
+// #define calc_rva(target_addr, current_addr, current_inst_bytes) (target_addr) - ((current_addr) + (current_inst_bytes))
 
 #define calc_va(nt, sec, offset) (nt)->OptionalHeader.ImageBase + (sec)->VirtualAddress + (offset)
 
@@ -35,8 +35,7 @@ typedef struct {
 typedef struct {
     uint8_t  dispOffset;
     uint8_t  dispSize;
-    uint64_t fileOffset;
-    uint64_t oldTarget;
+    uint64_t instOffset; // instruction's offset in a file
 } RelocUnit; // relocation unit
 
 
@@ -300,7 +299,7 @@ int add_section(PE *pe, const char *output, const char *name, const unsigned cha
 }
 
 
-uint64_t map_address(uint64_t old)
+int64_t map_address(int64_t old)
 {
     /*
     example:
@@ -314,7 +313,7 @@ uint64_t map_address(uint64_t old)
     
     */
     
-    uint64_t result = old;
+    int64_t result = old;
     
     for (uint64_t i = 0; i < reloc.shifts_len; ++i)
     {
@@ -330,10 +329,111 @@ uint64_t map_address(uint64_t old)
 }
 
 
+int insert_bytes(
+    unsigned char **buf,
+    long int *len,
+    size_t pos,
+    const uint8_t *data,
+    size_t data_len
+) {
+    if (pos > *len)
+        return -1;
+
+    unsigned char *new_buf =
+        calloc(1, *len + data_len);
+
+    if (!new_buf)
+        return -2;
+
+    // before pos
+    
+    memcpy(new_buf, *buf, pos);
+
+    // after pos (inserting the string)
+
+    memcpy(new_buf + pos, data, data_len);
+
+    // after data
+
+    memcpy(
+        new_buf + pos + data_len,
+        *buf + pos,
+        *len - pos
+    );
+
+    free(*buf);
+
+    *buf = new_buf;
+    *len += data_len;
+
+    return 0;
+}
+
+int insert_insts(PE *pe, size_t offset, const uint8_t *data, size_t data_len)
+{
+    int res = insert_bytes(&pe->file, &pe->file_size, offset, data, data_len);
+    
+    if (!res)
+        return res;
+    
+    RelocShift *s = &reloc.shifts[reloc.shifts_len];
+    
+    s->addr0 = offset;
+    s->delta = data_len;
+
+    reloc.shifts_len += 1;
+    
+    return 0;
+}
+
+int shift_insts(PE *pe)
+{
+    for (uint64_t i = 0; i < reloc.units_len; i++)
+    {
+        
+        
+        RelocUnit *r = &reloc.units[i];
+        
+        // calculating mapped instruction offset
+        
+        int64_t mappedInstOffset = map_address(r->instOffset);
+        
+        // calculating the pointer to the beginnning of the displacement (rel32, rel8, ...)
+        
+        uint8_t *disp0           = pe->file + mappedInstOffset + r->dispOffset;
+        
+        // getting old displacement
+        
+        int64_t oldDisp;
+        memcpy(&oldDisp, disp0, r->dispSize);
+
+        // getting old target
+
+        int64_t oldInstEnd = r->instOffset + r->dispOffset + r->dispSize;
+        int64_t oldTarget  = oldInstEnd + oldDisp;
+        
+        // getting newTarget
+        
+        int64_t newTarget  = map_address(oldTarget);
+        
+        // calculating new displacement
+        
+        int64_t newInstEnd = mappedInstOffset + r->dispOffset + r->dispSize;
+        int64_t newDisp    = newTarget - newInstEnd;
+        
+        // apply changes
+        
+        // memcpy(disp0, &newDisp, r->dispSize);
+        
+    }
+    
+}
+
+
 int main(void) {
     unsigned char payload[] = { 0x48, 0x31, 0xC0, 0xC3 };
 
-    
+    /*
     reloc.shifts[0].addr0 = 0x1005;
     reloc.shifts[0].delta = 3;
     
@@ -345,7 +445,7 @@ int main(void) {
     printf("mapped addr: %0X\n", map_address(0x1008));
     
     return 1;
-    
+    */
 
 
     PE p1;
@@ -362,17 +462,32 @@ int main(void) {
     
     IMAGE_SECTION_HEADER *text = find_section(&p1, ".text");
     
-    //printf("text section: %d, PhysicalAddress: %d, PointerToRawData: %d, SizeOfRawData: %d\n", text, text->Misc.PhysicalAddress, text->PointerToRawData, text->SizeOfRawData);
-
+    
 
     size_t offset = text->PointerToRawData;
     size_t end    = offset + text->SizeOfRawData;
+
+
+    // insert test
+    
+    uint8_t data[] = {0x89, 0xC0}; // nops
+    
+
+    // insert_insts(pe, offset, data ,strlen(data));
+    
+    // insert test
+
+
 
     ULONGLONG ImageBase = pe->nt->OptionalHeader.ImageBase;
 
     _DInst insts[1];
     
-    unsigned int count;
+    uint32_t count;
+    
+    int rip_count = 0;
+    int pc_count  = 0;
+    int ptr_count = 0;
 
     _CodeInfo ci = {0};
 
@@ -401,6 +516,8 @@ int main(void) {
             
             
             printf("    RIP: %llx -> %llx\n", (unsigned long long)di->addr, (unsigned long long)target);
+            
+            rip_count++;
         }
 
         for (unsigned int j = 0; j < di->opsNo; j++)
@@ -411,17 +528,20 @@ int main(void) {
             {
                 uint64_t target = INSTRUCTION_GET_TARGET(di);
                 printf("    PC:  %llx -> %llx, di->imm.addr=%llx\n", (unsigned long long)di->addr, (unsigned long long)target, (unsigned long long)di->imm.addr);
+                pc_count++;
             }
 
             if (op->type == O_PTR)
             {
                 printf("    PTR: segment=%x offset=%x\n", di->imm.ptr.seg, di->imm.ptr.off);
+                //ptr_count++;
             }
         }
 
         offset += di->size;
     }
 
+    printf("rip_count=%d, pc_count=%d, ptr_count=%d\n", rip_count, pc_count, ptr_count);
 
     
 
