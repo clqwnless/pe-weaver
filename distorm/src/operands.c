@@ -1061,9 +1061,14 @@ int operands_extract(_CodeInfo* ci, _DInst* di, _InstInfo* ii,
 		case OT_RELCB:
 		case OT_RELC_FULL:
 
+            // O_PC
+            // here are imm.addr defined (removing !read_stream_safe_sint... int the 'else'-block affects imm.addr so that it remains '0' consistently
+
 			if (type == OT_RELCB) {
 				operands_set_ts(op, O_PC, 8);
 				if (!read_stream_safe_sint8(ci, &di->imm.sqword)) return FALSE;
+                
+                assign_disp_offset(instruction_start, ci, di);
 			} else { /* OT_RELC_FULL */
 
 				/* Yep, operand size prefix affects relc also.  */
@@ -1071,9 +1076,13 @@ int operands_extract(_CodeInfo* ci, _DInst* di, _InstInfo* ii,
 				if (effOpSz == Decode16Bits) {
 					operands_set_ts(op, O_PC, 16);
 					if (!read_stream_safe_sint16(ci, &di->imm.sqword)) return FALSE;
+                    
+                    assign_disp_offset(instruction_start, ci, di);
 				} else { /* Decode32Bits or Decode64Bits = for now they are the same */
 					operands_set_ts(op, O_PC, 32);
 					if (!read_stream_safe_sint32(ci, &di->imm.sqword)) return FALSE;
+                    
+                    assign_disp_offset(instruction_start, ci, di);
 				}
 			}
 

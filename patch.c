@@ -329,7 +329,7 @@ int main(void) {
             if (op->type == O_PC)
             {
                 uint64_t target = INSTRUCTION_GET_TARGET(di);
-                printf("    PC:  %llx -> %llx\n", (unsigned long long)di->addr, (unsigned long long)target);
+                printf("    PC:  %llx -> %llx, di->imm.addr=%llx\n", (unsigned long long)di->addr, (unsigned long long)target, (unsigned long long)di->imm.addr);
             }
 
             if (op->type == O_PTR)
