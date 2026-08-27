@@ -417,39 +417,31 @@ int shift_insts(PE *pe)
         
         int64_t mappedInstOffset = map_address(r->instOffset);
         
-        printf("r->instOffset: %" PRIi64 " mappedInstOffset: %" PRIi64 " dispbytes=%d" "\n", r->instOffset, mappedInstOffset, dispBytes);
+        //printf("r->instOffset: %" PRIi64 " mappedInstOffset: %" PRIi64 " dispbytes=%d" "\n", r->instOffset, mappedInstOffset, dispBytes);
         
         // calculating the pointer to the beginnning of the displacement (rel32, rel8, ...)
         
-        uint8_t *disp0 = pe->file + r->instOffset + r->dispOffset;
+        uint8_t *disp0 = pe->file + mappedInstOffset + r->dispOffset;
         
         // getting old displacement
         
         int64_t oldDisp;
-        memcpy(&oldDisp, disp0, dispBytes);
+        //memcpy(&oldDisp, disp0, dispBytes);
 
+        if (dispBytes == 1)
+            oldDisp = *(int8_t*)disp0;
+        else if (dispBytes == 4)
+            oldDisp = *(int32_t*)disp0;
+        else if (dispBytes == 8)
+            oldDisp = *(int64_t*)disp0;
         
+        /*
         for (unsigned int i = 0; i < dispBytes; i++)
         {
             printf("%02X ", disp0[i]);
         }
+        */
         
-        
-        printf("\n");
-
-        continue;
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -471,7 +463,7 @@ int shift_insts(PE *pe)
         
         memcpy(disp0, &newDisp, dispBytes);
         
-        
+        printf("oldDisp=%" PRIi64 ", newDisp=% " PRIi64 "\n", oldDisp, newDisp);
         
     }
     
@@ -485,7 +477,7 @@ void append_reloc_unit(uint8_t instSize, uint8_t dispSize, uint64_t instOffset)
     r->dispSize   = dispSize;
     r->instOffset = instOffset;
     
-    printf("saved reloc, dispOffset=%d, dispSize=%d, instOffset=%d\n", r->dispOffset, r->dispSize, r->instOffset);
+    //printf("saved reloc, dispOffset=%d, dispSize=%d, instOffset=%d\n", r->dispOffset, r->dispSize, r->instOffset);
     
     reloc.units_len += 1;
 }
@@ -614,17 +606,16 @@ int main(void) {
     
     collect_reloc_info(pe, text);
     
-    //uint8_t data[2] = {0x89, 0xC0}; // nops
-    //res = insert_insts(pe, text->PointerToRawData, data, sizeof(data));    
+    uint8_t data[2] = {0x89, 0xC0}; // nops
+    res = insert_insts(pe, text->PointerToRawData, data, sizeof(data));    
     
     //printf("insert_insts res=%d, shifts_len=%d\n", res, reloc.shifts_len);
     
     shift_insts(pe);
    
    
-    res = save_pe(pe, "output.exe");
-    
-    printf("res: %d\n", res);
+    //res = save_pe(pe, "output.exe");
+    //printf("res: %d\n", res);
     
     //printf("units_len=%llu\n", reloc.units_len);
     // add_section(&p1, "patched.exe", ".patch", payload, sizeof(payload)); 
