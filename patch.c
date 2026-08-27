@@ -8,7 +8,7 @@
 
 
 #define align_up(value, alignment) (((value) + (alignment) - 1) / (alignment)) * (alignment)
-#define jmp_calc_rel32(target_addr, current_addr) (target_addr) - ((current_addr) + 5)
+#define calc_rav(target_addr, current_addr, current_inst_bytes) (target_addr) - ((current_addr) + (current_inst_bytes))
 
 #define calc_va(nt, sec, offset) (nt)->OptionalHeader.ImageBase + (sec)->VirtualAddress + (offset)
 
@@ -16,7 +16,7 @@
 
 
 
-typedef unsigned char u8;
+typedef unsigned char uint8_t;
 
 typedef struct {
     IMAGE_DOS_HEADER *dos;
@@ -26,7 +26,7 @@ typedef struct {
     DWORD file_alignment;
     DWORD section_alignment;
     
-    u8 *file;
+    uint8_t *file;
     long file_size;
     
     const char *path;
@@ -57,10 +57,10 @@ void print_sections(IMAGE_NT_HEADERS64 *nt, IMAGE_SECTION_HEADER *sections)
     }
 }
 
-void print_sec(u8 *file, IMAGE_SECTION_HEADER *sec)
+void print_sec(uint8_t *file, IMAGE_SECTION_HEADER *sec)
 {
-    u8 *start = &file[sec->PointerToRawData];
-    u8 *end   = start + sec->SizeOfRawData;
+    uint8_t *start = &file[sec->PointerToRawData];
+    uint8_t *end   = start + sec->SizeOfRawData;
     
     while (start < end)
     {
@@ -78,9 +78,9 @@ long get_file_size(FILE *f)
     return file_size;
 }
 
-u8 *read_file(FILE *f, long file_size)
+uint8_t *read_file(FILE *f, long file_size)
 {
-    u8 *file = malloc(file_size);
+    uint8_t *file = malloc(file_size);
     
     if (!file) {
         fclose(f);
@@ -115,7 +115,7 @@ int load_pe(const char *path, PE *pe)
     
 
     long file_size = get_file_size(f);    
-    u8 *file       = read_file(f, file_size);
+    uint8_t *file       = read_file(f, file_size);
     
     if (!file)
     {
@@ -226,11 +226,11 @@ int add_section(PE *pe, const char *output, const char *name, const unsigned cha
 
 
 
-    new_section->VirtualAddress = new_rva;
+    new_section->VirtualAddress   = new_rva;
     new_section->Misc.VirtualSize = new_virtual_size;
     new_section->PointerToRawData = new_raw;
-    new_section->SizeOfRawData = new_raw_size;
-    new_section->Characteristics = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
+    new_section->SizeOfRawData    = new_raw_size;
+    new_section->Characteristics  = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
 
     pe->nt->FileHeader.NumberOfSections++;
     pe->nt->OptionalHeader.SizeOfImage = align_up(new_rva + new_virtual_size, pe->section_alignment);
@@ -280,52 +280,66 @@ int main(void) {
 
     size_t offset = text->PointerToRawData;
     size_t end    = offset + text->SizeOfRawData;
+
+    ULONGLONG ImageBase = pe->nt->OptionalHeader.ImageBase;
+
+    _DInst insts[1];
     
+    unsigned int count;
+
+    _CodeInfo ci = {0};
 
     while (offset < end)
     {
-        _DecodedInst instruction;
 
-        unsigned int decoded = 0;
+        ci.codeOffset = ImageBase + offset;
+        ci.code       = pe->file + offset;
+        ci.codeLen    = (int)(end - offset);
+        ci.dt         = Decode64Bits;
+        ci.features   = DF_NONE;
 
-        _DecodeResult result = distorm_decode64(
+        _DecodeResult r = distorm_decompose64(&ci, insts, 1, &count);
+
+        /*
+        printf(
+            "offset=%zx len=%d result=%d count=%u\n",
             offset,
-            pe->file + offset,
-            (unsigned int)(end - offset),
-            Decode64Bits,
-            &instruction,
-            1,
-            &decoded
+            ci.codeLen,
+            r,
+            count
         );
+        */
 
-        if (result == DECRES_INPUTERR || decoded == 0)
-        {
-            printf(
-                "FAIL offset=0x%zx remaining=%zu result=%d\n",
-                offset,
-                end - offset,
-                result
-            );
-
-            printf("bytes:");
-            for (size_t i = 0; i < 16 && offset + i < end; i++)
-                printf(" %02X", pe->file[offset + i]);
-            printf("\n");
-
+        if (count == 0)
             break;
+
+        _DInst *di = &insts[0];
+        
+        printf("  %llx size=%u, disp=%llx, dispOffset=%d\n", (unsigned long long)di->addr, di->size, di->disp, di->dispOffset);
+
+        if (di->flags & FLAG_RIP_RELATIVE) {
+            uint64_t target = INSTRUCTION_GET_RIP_TARGET(di);
+            printf("    RIP: %llx -> %llx\n", (unsigned long long)di->addr, (unsigned long long)target);
         }
 
-        printf(
-            "0x%zx: length=%u, %s %s\n",
-            offset,
-            instruction.size,
-            instruction.mnemonic.p,
-            instruction.operands.p
-        );
+        for (unsigned int j = 0; j < di->opsNo; j++)
+        {
+            _Operand *op = &di->ops[j];
 
-        offset += instruction.size;
+            if (op->type == O_PC)
+            {
+                uint64_t target = INSTRUCTION_GET_TARGET(di);
+                printf("    PC:  %llx -> %llx\n", (unsigned long long)di->addr, (unsigned long long)target);
+            }
+
+            if (op->type == O_PTR)
+            {
+                printf("    PTR: segment=%x offset=%x\n", di->imm.ptr.seg, di->imm.ptr.off);
+            }
+        }
+
+        offset += di->size;
     }
-
 
 
     /*
