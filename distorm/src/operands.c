@@ -15,8 +15,6 @@ This library is licensed under the BSD license. See the file COPYING.
 #include "insts.h"
 #include "../include/mnemonics.h"
 
-#define assign_disp_offset(instruction_start, ci, inst) inst->dispOffset = (uint8_t)((ci->code) - (instruction_start))
-
 
 /* Maps a register to its register-class mask. */
 uint32_t _REGISTERTORCLASS[] = /* Based on _RegisterType enumeration! */
@@ -235,8 +233,6 @@ static int operands_extract_modrm(_CodeInfo* ci, _PrefixState* ps, _DInst* di,
                                   _DecodeType effAdrSz, unsigned int mod, unsigned int rm,
                                   _iflags instFlags, _Operand* op)
 {
-    const uint8_t *instruction_start = ci->code;
-    
 	unsigned char sib = 0, base = 0;
 
 	/* Memory indirection decoding ahead:) */
@@ -253,8 +249,6 @@ static int operands_extract_modrm(_CodeInfo* ci, _PrefixState* ps, _DInst* di,
 			/* 5 is a special case - only 32 bits displacement, or RIP relative. */
 			di->dispSize = 32;
 			if (!read_stream_safe_sint32(ci, (int64_t*)&di->disp)) return FALSE;
-
-            assign_disp_offset(instruction_start, ci, di);
 
 			/* Absolute address: */
 			op->type = O_DISP;
@@ -289,14 +283,10 @@ static int operands_extract_modrm(_CodeInfo* ci, _PrefixState* ps, _DInst* di,
 			if (mod == 1) {
 				di->dispSize = 8;
 				if (!read_stream_safe_sint8(ci, (int64_t*)&di->disp)) return FALSE;
-                
-                assign_disp_offset(instruction_start, ci, di);
 			}
 			else if ((mod == 2) || ((sib & 7) == 5)) { /* If there is no BASE, read DISP32! */
 				di->dispSize = 32;
 				if (!read_stream_safe_sint32(ci, (int64_t*)&di->disp)) return FALSE;
-                
-                assign_disp_offset(instruction_start, ci, di);
 			}
 
 			/* Get the base register. */
@@ -315,8 +305,6 @@ static int operands_extract_modrm(_CodeInfo* ci, _PrefixState* ps, _DInst* di,
 			op->type = O_DISP;
 			di->dispSize = 16;
 			if (!read_stream_safe_sint16(ci, (int64_t*)&di->disp)) return FALSE;
-            
-            assign_disp_offset(instruction_start, ci, di);
 		}
 		else {
 			/*
@@ -339,14 +327,10 @@ static int operands_extract_modrm(_CodeInfo* ci, _PrefixState* ps, _DInst* di,
 			if (mod == 1) { /* 8 bits displacement + indirection */
 				di->dispSize = 8;
 				if (!read_stream_safe_sint8(ci, (int64_t*)&di->disp)) return FALSE;
-                
-                assign_disp_offset(instruction_start, ci, di);
 			}
 			else if (mod == 2) { /* 16 bits displacement + indirection */
 				di->dispSize = 16;
 				if (!read_stream_safe_sint16(ci, (int64_t*)&di->disp)) return FALSE;
-                
-                assign_disp_offset(instruction_start, ci, di);
 			}
 		}
 
@@ -386,8 +370,6 @@ int operands_extract(_CodeInfo* ci, _DInst* di, _InstInfo* ii,
 	int ret = 0;
 	unsigned int mod, reg, rm;
 	unsigned int size = 0;
-
-    const uint8_t *instruction_start = ci->code;
 
 	/*
 	 * ModRM bits:
@@ -1061,14 +1043,9 @@ int operands_extract(_CodeInfo* ci, _DInst* di, _InstInfo* ii,
 		case OT_RELCB:
 		case OT_RELC_FULL:
 
-            // O_PC
-            // here are imm.addr defined (removing !read_stream_safe_sint... int the 'else'-block affects imm.addr so that it remains '0' consistently
-
 			if (type == OT_RELCB) {
 				operands_set_ts(op, O_PC, 8);
 				if (!read_stream_safe_sint8(ci, &di->imm.sqword)) return FALSE;
-                
-                assign_disp_offset(instruction_start, ci, di);
 			} else { /* OT_RELC_FULL */
 
 				/* Yep, operand size prefix affects relc also.  */
@@ -1076,13 +1053,9 @@ int operands_extract(_CodeInfo* ci, _DInst* di, _InstInfo* ii,
 				if (effOpSz == Decode16Bits) {
 					operands_set_ts(op, O_PC, 16);
 					if (!read_stream_safe_sint16(ci, &di->imm.sqword)) return FALSE;
-                    
-                    assign_disp_offset(instruction_start, ci, di);
 				} else { /* Decode32Bits or Decode64Bits = for now they are the same */
 					operands_set_ts(op, O_PC, 32);
 					if (!read_stream_safe_sint32(ci, &di->imm.sqword)) return FALSE;
-                    
-                    assign_disp_offset(instruction_start, ci, di);
 				}
 			}
 
@@ -1123,22 +1096,14 @@ int operands_extract(_CodeInfo* ci, _DInst* di, _InstInfo* ii,
 
 				di->dispSize = 16;
 				if (!read_stream_safe_uint16(ci, &di->disp)) return FALSE;
-                
-                assign_disp_offset(instruction_start, ci, di);
-                
 			} else if (effAdrSz == Decode32Bits) {
 				ps->usedPrefixes |= INST_PRE_ADDR_SIZE;
 
 				di->dispSize = 32;
 				if (!read_stream_safe_uint32(ci, &di->disp)) return FALSE;
-                
-                assign_disp_offset(instruction_start, ci, di);
-                
 			} else { /* Decode64Bits */
 				di->dispSize = 64;
 				if (!read_stream_safe_uint64(ci, &di->disp)) return FALSE;
-                
-                assign_disp_offset(instruction_start, ci, di);
 			}
 		break;
 		case OT_CONST1:
