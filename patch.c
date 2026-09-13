@@ -62,7 +62,6 @@ typedef struct {
     uint32_t delta; // in bytes
 } RelocShift;
 
-
 typedef struct {
     RelocUnit  units[100000];
     RelocShift shifts[1000];
@@ -75,20 +74,7 @@ typedef struct {
 Reloc reloc = {.units_len=0, .shifts_len=0};
 
 
-IMAGE_SECTION_HEADER *find_section(PE *pe, const char *searched_name)
-{
-    
-    
-    for (int i = 0; i < pe->nt->FileHeader.NumberOfSections; i++)
-    {
-        IMAGE_SECTION_HEADER *s = &pe->sections[i];
-        
-        if (strcmp(s->Name, searched_name) == 0)
-            return s;
-    }
-    
-    return NULL;
-}
+/* debug functions */
 
 void print_sections(IMAGE_NT_HEADERS64 *nt, IMAGE_SECTION_HEADER *sections)
 {
@@ -110,6 +96,25 @@ void print_sec(uint8_t *file, IMAGE_SECTION_HEADER *sec)
         start++;
     }
 }
+
+void test_disp_hex(uint64_t disp, uint64_t dispSize)
+{
+    uint8_t dispBytes = bits_to_bytes(dispSize);
+    
+    
+    uint8_t temp[dispBytes];
+    memcpy(temp, &disp, dispBytes);
+    
+    printf(" disp: ");
+    for (int i = 0; i < dispBytes; i++)
+    {
+        printf("%02X ", temp[i]);
+    }
+    
+    printf("\n");
+}
+
+/* file api */
 
 long get_file_size(FILE *f)
 {
@@ -139,9 +144,167 @@ uint8_t *read_file(FILE *f, long file_size)
     return file;
 }
 
+int save_pe(PE *pe, const uint8_t *output)
+{
+    FILE *f = fopen(output, "wb");
+    
+    if (!f)
+        return -1;
+    
+    int res = fwrite(pe->file, 1, pe->file_size, f);
+    
+    if (!res)
+    {
+        fclose(f);
+        return -2;
+    }
+    
+    fclose(f);
+    
+    return 0;
+}
 
+/* pe helpers */
 
+size_t calc_sec_table_space(PE *pe)
+{
+    WORD section_count = pe->nt->FileHeader.NumberOfSections;
+    
+    // (sections - file) высчитывает фактически оффсет в файле у начала sections
+    // потом берем и добавляем к этому байты всех существующих секций (section_count * sizeof(struct ...))
+    // и потом из абсолютного оффсета (PointerToRawData) (он именно в файле ; если бы мы не сделали минус file то там мы работали с адресом в памяти на runtime, что ненужно фактически)
+    // вычитаем section_table_end (оффсет конца table)
+    
+    printf("here2\n");
+    
+    size_t section_table_end = (size_t)((unsigned char *)pe->sections - pe->file) + section_count * sizeof(IMAGE_SECTION_HEADER);
+    size_t first_section_raw = pe->sections[0].PointerToRawData;
+    size_t free_space = first_section_raw - section_table_end;
 
+    /*
+    printf("section table end: 0x%zx\n", section_table_end);
+    printf("first section raw: 0x%zx\n", first_section_raw);
+    printf("free space:        0x%zx\n", free_space);
+    */
+
+    return free_space;
+}
+
+int64_t map_address(int64_t old)
+{
+    /*
+    example:
+    
+    old=0x1005
+    
+    shift:
+    
+    addr0 = 0x1000
+    len   = 3
+    
+    */
+    
+    int64_t result = old;
+    
+    for (uint64_t i = 0; i < reloc.shifts_len; ++i)
+    {
+        RelocShift shift = reloc.shifts[i];
+        
+        //printf(
+        //    "shift.delta=%" PRIu32 "\n", shift.delta
+        //);
+        
+        
+        
+        if (old >= shift.addr0)
+            result += shift.delta;
+    }
+    
+    return result;
+}
+
+int insert_bytes(
+    unsigned char **buf,
+    long int *len,
+    size_t pos,
+    const uint8_t *data,
+    size_t data_len
+) {
+    if (pos > *len)
+        return -1;
+
+    unsigned char *new_buf =
+        calloc(1, *len + data_len);
+
+    if (!new_buf)
+        return -2;
+
+    // before pos
+    
+    memcpy(new_buf, *buf, pos);
+
+    // after pos (inserting the string)
+
+    memcpy(new_buf + pos, data, data_len);
+
+    // after data
+
+    memcpy(
+        new_buf + pos + data_len,
+        *buf + pos,
+        *len - pos
+    );
+
+    free(*buf);
+
+    *buf = new_buf;
+    *len += data_len;
+
+    return 1;
+}
+
+int insert_insts(PE *pe, size_t offset, const uint8_t *data, size_t data_len)
+{
+    int res = insert_bytes(&pe->file, &pe->file_size, offset, data, data_len);
+    
+    if (!res)
+        return res;
+    
+    RelocShift *s = &reloc.shifts[reloc.shifts_len];
+    
+    s->addr0 = offset;
+    s->delta = data_len;
+
+    
+
+    /*
+    printf(
+        "insert: len_data=%d, s->addr0=%" PRIu64 ", s->delta=%" PRIu32 "\n",
+        data_len,
+        s->addr0,
+        s->delta
+    );
+    */
+
+    reloc.shifts_len += 1;
+    
+    return 0;
+}
+
+void append_reloc_unit(uint8_t instSize, uint8_t dispSize, uint64_t instOffset)
+{
+    RelocUnit *r = &reloc.units[reloc.units_len];
+    
+    r->dispOffset = instSize - bits_to_bytes(dispSize);
+    r->dispSize   = dispSize;
+    r->instOffset = instOffset;
+    
+    //printf("saved reloc, dispOffset=%d, dispSize=%d, instOffset=%d\n", r->dispOffset, r->dispSize, r->instOffset);
+    
+    reloc.units_len += 1;
+}
+
+/* loaders (init) */
 
 int load_pe(const char *path, PE *pe)
 {
@@ -214,34 +377,40 @@ cleanup:
     return result;
 }
 
-size_t calc_sec_table_space(PE *pe)
+/* main pe api */
+
+IMAGE_SECTION_HEADER *find_section(PE *pe, const char *searched_name)
+{ 
+    for (int i = 0; i < pe->nt->FileHeader.NumberOfSections; i++)
+    {
+        IMAGE_SECTION_HEADER *s = &pe->sections[i];
+        
+        if (strcmp(s->Name, searched_name) == 0)
+            return s;
+    }
+    
+    return NULL;
+}
+
+IMAGE_SECTION_HEADER *find_section_by_faddr(PE *pe, int64_t faddr)
 {
-    printf("here1\n");
+    /* faddr = file address */
     
-    WORD section_count = pe->nt->FileHeader.NumberOfSections;
+    for (WORD i = 0; i < pe->nt->FileHeader.NumberOfSections; i++)
+    {
+        IMAGE_SECTION_HEADER *s = &pe->sections[i];
+        
+        if (faddr >= s->PointerToRawData)
+        {
+            return s;
+        }
+    }
     
-    // (sections - file) высчитывает фактически оффсет в файле у начала sections
-    // потом берем и добавляем к этому байты всех существующих секций (section_count * sizeof(struct ...))
-    // и потом из абсолютного оффсета (PointerToRawData) (он именно в файле ; если бы мы не сделали минус file то там мы работали с адресом в памяти на runtime, что ненужно фактически)
-    // вычитаем section_table_end (оффсет конца table)
-    
-    printf("here2\n");
-    
-    size_t section_table_end = (size_t)((unsigned char *)pe->sections - pe->file) + section_count * sizeof(IMAGE_SECTION_HEADER);
-    size_t first_section_raw = pe->sections[0].PointerToRawData;
-    size_t free_space = first_section_raw - section_table_end;
-
-    /*
-    printf("section table end: 0x%zx\n", section_table_end);
-    printf("first section raw: 0x%zx\n", first_section_raw);
-    printf("free space:        0x%zx\n", free_space);
-    */
-
-    return free_space;
+    return NULL;
 }
 
 
-int add_section(PE *pe, const char *output, const char *name, const unsigned char *data, size_t data_size) {
+int add_section(PE *pe, const char *output, const char *name, const uint8_t *data, size_t data_size) {
     
     
     WORD section_count         = pe->nt->FileHeader.NumberOfSections;
@@ -265,8 +434,6 @@ int add_section(PE *pe, const char *output, const char *name, const unsigned cha
 
     memset(new_section, 0, sizeof(IMAGE_SECTION_HEADER));
     memcpy(new_section->Name, name, strlen(name) > IMAGE_SIZEOF_SHORT_NAME ? IMAGE_SIZEOF_SHORT_NAME : strlen(name));
-
-
 
     new_section->VirtualAddress   = new_rva;
     new_section->Misc.VirtualSize = new_virtual_size;
@@ -299,108 +466,7 @@ int add_section(PE *pe, const char *output, const char *name, const unsigned cha
     return 1;
 }
 
-
-int64_t map_address(int64_t old)
-{
-    /*
-    example:
-    
-    old=0x1005
-    
-    shift:
-    
-    addr0 = 0x1000
-    len   = 3
-    
-    */
-    
-    int64_t result = old;
-    
-    for (uint64_t i = 0; i < reloc.shifts_len; ++i)
-    {
-        RelocShift shift = reloc.shifts[i];
-        
-
-        //printf(
-        //    "shift.delta=%" PRIu32 "\n", shift.delta
-        //);
-        
-        if (old >= shift.addr0)
-            result += shift.delta;
-    }
-    
-    return result;
-}
-
-
-int insert_bytes(
-    unsigned char **buf,
-    long int *len,
-    size_t pos,
-    const uint8_t *data,
-    size_t data_len
-) {
-    if (pos > *len)
-        return -1;
-
-    unsigned char *new_buf =
-        calloc(1, *len + data_len);
-
-    if (!new_buf)
-        return -2;
-
-    // before pos
-    
-    memcpy(new_buf, *buf, pos);
-
-    // after pos (inserting the string)
-
-    memcpy(new_buf + pos, data, data_len);
-
-    // after data
-
-    memcpy(
-        new_buf + pos + data_len,
-        *buf + pos,
-        *len - pos
-    );
-
-    free(*buf);
-
-    *buf = new_buf;
-    *len += data_len;
-
-    return 1;
-}
-
-int insert_insts(PE *pe, size_t offset, const uint8_t *data, size_t data_len)
-{
-    int res = insert_bytes(&pe->file, &pe->file_size, offset, data, data_len);
-    
-    if (!res)
-        return res;
-    
-    RelocShift *s = &reloc.shifts[reloc.shifts_len];
-    
-    s->addr0 = offset;
-    s->delta = data_len;
-
-    /*
-    printf(
-        "insert: len_data=%d, s->addr0=%" PRIu64 ", s->delta=%" PRIu32 "\n",
-        data_len,
-        s->addr0,
-        s->delta
-    );
-    */
-
-    reloc.shifts_len += 1;
-    
-    return 0;
-}
-
-
-int shift_insts(PE *pe)
+void shift_insts(PE *pe)
 {
     for (uint64_t i = 0; i < reloc.units_len; i++)
     {
@@ -463,42 +529,24 @@ int shift_insts(PE *pe)
         
         memcpy(disp0, &newDisp, dispBytes);
         
-        printf("oldDisp=%" PRIi64 ", newDisp=% " PRIi64 "\n", oldDisp, newDisp);
+        printf("oldTarget=%" PRIi64 ", newTarget=%" PRIi64 ", oldDisp=%" PRIi64 ", newDisp=% " PRIi64 "\n", oldTarget, newTarget, oldDisp, newDisp);
         
     }
     
 }
 
-void append_reloc_unit(uint8_t instSize, uint8_t dispSize, uint64_t instOffset)
+void shift_sections(PE *pe)
 {
-    RelocUnit *r = &reloc.units[reloc.units_len];
+    WORD section_count = pe->nt->FileHeader.NumberOfSections;
     
-    r->dispOffset = instSize - bits_to_bytes(dispSize);
-    r->dispSize   = dispSize;
-    r->instOffset = instOffset;
-    
-    //printf("saved reloc, dispOffset=%d, dispSize=%d, instOffset=%d\n", r->dispOffset, r->dispSize, r->instOffset);
-    
-    reloc.units_len += 1;
-}
-
-void test_disp_hex(uint64_t disp, uint64_t dispSize)
-{
-    uint8_t dispBytes = bits_to_bytes(dispSize);
-    
-    
-    uint8_t temp[dispBytes];
-    memcpy(temp, &disp, dispBytes);
-    
-    printf(" disp: ");
-    for (int i = 0; i < dispBytes; i++)
+    for (WORD i = 0; i < section_count; i++)
     {
-        printf("%02X ", temp[i]);
+        IMAGE_SECTION_HEADER *section = &pe->sections[i];
+        
+        
+        
     }
-    
-    printf("\n");
 }
-
 
 void collect_reloc_info(PE *pe, IMAGE_SECTION_HEADER *sec)
 {
@@ -565,25 +613,6 @@ void collect_reloc_info(PE *pe, IMAGE_SECTION_HEADER *sec)
     }
 }
 
-int save_pe(PE *pe, const uint8_t *output)
-{
-    FILE *f = fopen(output, "wb");
-    
-    if (!f)
-        return -1;
-    
-    int res = fwrite(pe->file, 1, pe->file_size, f);
-    
-    if (!res)
-    {
-        fclose(f);
-        return -2;
-    }
-    
-    fclose(f);
-    
-    return 0;
-}
 
 
 int main(void) {
@@ -603,7 +632,14 @@ int main(void) {
     
     IMAGE_SECTION_HEADER *text = find_section(&p1, ".text");
     
+    IMAGE_SECTION_HEADER *sec = find_section_by_faddr(pe, text->PointerToRawData);
     
+    if (sec)
+        printf("sec->Name: %s\n", sec->Name);
+    else
+        printf("sec not found");
+    
+    /*
     collect_reloc_info(pe, text);
     
     uint8_t data[2] = {0x89, 0xC0}; // nops
@@ -612,7 +648,7 @@ int main(void) {
     //printf("insert_insts res=%d, shifts_len=%d\n", res, reloc.shifts_len);
     
     shift_insts(pe);
-   
+    */
    
     //res = save_pe(pe, "output.exe");
     //printf("res: %d\n", res);
@@ -626,3 +662,5 @@ int main(void) {
     //printf("section added\n");
     return 0;
 }
+
+
