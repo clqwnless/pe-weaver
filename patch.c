@@ -431,6 +431,18 @@ IMAGE_SECTION_HEADER *find_section_by_faddr(PE *pe, int64_t faddr)
 }
 
 
+/* get the PointerToRawData of the next section */
+DWORD get_next_raw_offset(PE *pe)
+{
+    WORD section_count         = pe->nt->FileHeader.NumberOfSections;
+    IMAGE_SECTION_HEADER *last = &pe->sections[section_count - 1];
+    
+    DWORD new_raw          = align_up(last->PointerToRawData + last->SizeOfRawData, pe->file_alignment);
+    
+    return new_raw;
+}
+
+
 int add_section(PE *pe, const char *name, const uint8_t *data, size_t data_size) {
     WORD section_count         = pe->nt->FileHeader.NumberOfSections;
     IMAGE_SECTION_HEADER *last = &pe->sections[section_count - 1];
@@ -442,7 +454,8 @@ int add_section(PE *pe, const char *name, const uint8_t *data, size_t data_size)
 
     // aligning file & virtual addresses ; filling the gap with 0x00 in file
 
-    DWORD new_raw          = align_up(last->PointerToRawData + last->SizeOfRawData, pe->file_alignment);
+    DWORD new_raw          = get_next_raw_offset(pe);
+    
     DWORD new_rva          = align_up(last->VirtualAddress + last->Misc.VirtualSize, pe->section_alignment);
     DWORD new_raw_size     = align_up(data_size, pe->file_alignment);
     DWORD new_virtual_size = (DWORD)data_size;
@@ -475,6 +488,7 @@ int add_section(PE *pe, const char *name, const uint8_t *data, size_t data_size)
     free(pe->file);
     
     pe->file = new_file;
+    pe->file_size = new_file_size;
     
     return 0;
 }
@@ -694,37 +708,109 @@ RelocUnit *find_riprel_inst(PE *pe, IMAGE_SECTION_HEADER *sec, uint8_t dispSizeB
 
 
 
-int patch(PE *pe, const char *target_section_name)
+int patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t data_size)
 {
-    IMAGE_SECTION_HEADER *text       = find_section(pe, ".text");
-    IMAGE_SECTION_HEADER *target_sec = find_section(pe, target_section_name);
+    uint8_t ret_code = 0;
     
+    IMAGE_SECTION_HEADER *text       = find_section(pe, ".text");    
     RelocUnit *p                     = find_riprel_inst(pe, text, 4, I_JMP);
     
-    if (p == NULL)          return -1;
-    if (text == NULL)       return -2;
-    if (target_sec == NULL) return -3;
+    uint8_t *new_data = NULL;
+    int ret;
     
+    if (text == NULL)
+    {
+        ret_code = -1;
+        goto cleanup;
+    }
+    
+    if (p == NULL)
+    {
+        ret_code = -2;
+        goto cleanup;
+    }
+
+
     printf("instOffset: %llu, dispOffset: %u, dispBytes: %u\n", p->instOffset, p->dispOffset, p->dispBytes);
+    
+    
+    /* make copy of the source instruction */
     
     uint8_t inst[16];
     uint8_t instSize = p->dispOffset + p->dispBytes;
     
     memcpy(inst, (pe->file + p->instOffset), instSize);
     
-    int32_t patch_riprel = target_sec->PointerToRawData - (p->instOffset + p->instOffset + p->dispBytes);
+    /* change the relative address in the source instruction so that the instruction refers to the correct address being in a new section */
     
-
+    /* reading as int32_t (4 bytes) */
+    
+    int32_t rel       = *(int32_t*)(pe->file + p->instOffset + p->dispOffset);
+    int64_t oldTarget = (p->instOffset + instSize) + rel;
+    
+    int32_t newRel    = oldTarget - (get_next_raw_offset(pe) + instSize);
+    
+    for (uint8_t i = 0; i < instSize + 1; i++)
+        printf("%02X ", inst[i]);
+    printf("\n");
+    
+    
+    memcpy(inst + p->dispOffset, &newRel, sizeof(newRel));
+    
+    for (uint8_t i = 0; i < instSize + 1; i++)
+        printf("%02X ", inst[i]);
+    printf("\n");
+    
+    printf("next_raw_offset=%d, oldTarget=%lld, rel=%d, newRel=%d\n", get_next_raw_offset(pe), oldTarget, rel, newRel);
+    
+    /* add source instruction to the data (instruction which is patched) */
+    
+    new_data = malloc(data_size + instSize);
+    
+    if (new_data == NULL)
+    {
+        ret_code = -3;
+        goto cleanup;
+    }
+    
+    memcpy(new_data, inst, instSize);
+    memcpy(new_data + instSize, data, data_size);
+    
+    size_t new_data_size = data_size + instSize;
+    
+    /* create new section with this data */
+    
+    ret = add_section(pe, new_sec_name, new_data, new_data_size);
+    // ret = add_section(pe, new_sec_name, data, data_size);
+    
+    if (ret != 0)
+    {
+        ret_code = -4;
+        goto cleanup;
+    }
+    
+    
+    
+    /*
     for (uint8_t i = 0; i < instSize + 1; i++)
         printf("%02X ", *(pe->file + p->instOffset + i));
     printf("\n");
-
-    memcpy((pe->file + p->instOffset + p->dispOffset), &patch_riprel, sizeof(int32_t));
+    */
     
+    /* the patch itself */
     
+    //int32_t patch_riprel = get_next_raw_offset(pe) - (p->instOffset + p->instOffset + p->dispBytes);
+    //memcpy((pe->file + p->instOffset + p->dispOffset), &patch_riprel, sizeof(patch_riprel));    
+    
+    /*
     for (uint8_t i = 0; i < instSize + 1; i++)
         printf("%02X ", *(pe->file + p->instOffset + i));
     printf("\n");
+    */
+    
+    
+    
+    
     
     /*
     for (uint8_t i = 0; i < instSize; i++)
@@ -734,11 +820,12 @@ int patch(PE *pe, const char *target_section_name)
     */
     
     
+cleanup:
     
+    free(new_data);
     free(p);
     
-    return 0;
-    
+    return ret_code;
 }
 
 
@@ -758,9 +845,10 @@ int main(void) {
         return 1;
     }
     
-    add_section(pe, ".patch", payload, sizeof(payload));
+
+    patch(&p1, ".patch", payload, sizeof(payload));
     
-    patch(&p1, ".patch");
+    save_pe(pe, "output.exe");
     
     
     /*
