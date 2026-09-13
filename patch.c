@@ -431,9 +431,7 @@ IMAGE_SECTION_HEADER *find_section_by_faddr(PE *pe, int64_t faddr)
 }
 
 
-int add_section(PE *pe, const char *output, const char *name, const uint8_t *data, size_t data_size) {
-    
-    
+int add_section(PE *pe, const char *name, const uint8_t *data, size_t data_size) {
     WORD section_count         = pe->nt->FileHeader.NumberOfSections;
     IMAGE_SECTION_HEADER *last = &pe->sections[section_count - 1];
 
@@ -466,25 +464,19 @@ int add_section(PE *pe, const char *output, const char *name, const uint8_t *dat
     pe->nt->OptionalHeader.SizeOfImage = align_up(new_rva + new_virtual_size, pe->section_alignment);
 
 
-    size_t new_file_size = new_raw + new_raw_size;
+    size_t new_file_size    = new_raw + new_raw_size;
     unsigned char *new_file = calloc(1, new_file_size);
     if (!new_file)
-        return 0;
-
+        return -1;
+    
     memcpy(new_file, pe->file, pe->file_size);
     memcpy(new_file + new_raw, data, data_size);
 
-    FILE *out = fopen(output, "wb");
-    if (!out) {
-        free(new_file);
-        return 0;
-    }
-
-    fwrite(new_file, 1, new_file_size, out);
-    fclose(out);
-
-    free(new_file);
-    return 1;
+    free(pe->file);
+    
+    pe->file = new_file;
+    
+    return 0;
 }
 
 void shift_insts(PE *pe)
@@ -702,6 +694,54 @@ RelocUnit *find_riprel_inst(PE *pe, IMAGE_SECTION_HEADER *sec, uint8_t dispSizeB
 
 
 
+int patch(PE *pe, const char *target_section_name)
+{
+    IMAGE_SECTION_HEADER *text       = find_section(pe, ".text");
+    IMAGE_SECTION_HEADER *target_sec = find_section(pe, target_section_name);
+    
+    RelocUnit *p                     = find_riprel_inst(pe, text, 4, I_JMP);
+    
+    if (p == NULL)          return -1;
+    if (text == NULL)       return -2;
+    if (target_sec == NULL) return -3;
+    
+    printf("instOffset: %llu, dispOffset: %u, dispBytes: %u\n", p->instOffset, p->dispOffset, p->dispBytes);
+    
+    uint8_t inst[16];
+    uint8_t instSize = p->dispOffset + p->dispBytes;
+    
+    memcpy(inst, (pe->file + p->instOffset), instSize);
+    
+    int32_t patch_riprel = target_sec->PointerToRawData - (p->instOffset + p->instOffset + p->dispBytes);
+    
+
+    for (uint8_t i = 0; i < instSize + 1; i++)
+        printf("%02X ", *(pe->file + p->instOffset + i));
+    printf("\n");
+
+    memcpy((pe->file + p->instOffset + p->dispOffset), &patch_riprel, sizeof(int32_t));
+    
+    
+    for (uint8_t i = 0; i < instSize + 1; i++)
+        printf("%02X ", *(pe->file + p->instOffset + i));
+    printf("\n");
+    
+    /*
+    for (uint8_t i = 0; i < instSize; i++)
+    {
+        printf("%02X ", inst[i]);
+    }
+    */
+    
+    
+    
+    free(p);
+    
+    return 0;
+    
+}
+
+
 
 int main(void) {
     unsigned char payload[] = { 0x48, 0x31, 0xC0, 0xC3 };
@@ -718,32 +758,14 @@ int main(void) {
         return 1;
     }
     
-    IMAGE_SECTION_HEADER *text = find_section(&p1, ".text");
-
+    add_section(pe, ".patch", payload, sizeof(payload));
     
-    RelocUnit *p = find_riprel_inst(pe, text, 4, I_JMP);
-    
-    if (p)
-    {
-        printf("instOffset: %llu, dispOffset: %u, dispBytes: %u\n", p->instOffset, p->dispOffset, p->dispBytes);
-        
-        uint8_t inst[16];
-        uint8_t instSize = p->dispOffset + p->dispBytes;
-        
-        memcpy(inst, (pe->file + p->instOffset), instSize);
-        
-        for (uint8_t i = 0; i < instSize; i++)
-        {
-            printf("%02X ", inst[i]);
-        }
-        
-        printf("\n");
-        
-        free(p);
-    }
+    patch(&p1, ".patch");
     
     
     /*
+    IMAGE_SECTION_HEADER *text = find_section(&p1, ".text");
+    
     collect_reloc_info(pe, text);
     
     uint8_t data[2] = {0x89, 0xC0}; // nops
