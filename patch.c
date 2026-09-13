@@ -750,18 +750,17 @@ int patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t data_siz
     
     int32_t newRel    = oldTarget - (get_next_raw_offset(pe) + instSize);
     
+    /*
     for (uint8_t i = 0; i < instSize + 1; i++)
         printf("%02X ", inst[i]);
     printf("\n");
+    */
     
+    // write the new relative-address to the copied instruction (which is inserted in the data)
     
     memcpy(inst + p->dispOffset, &newRel, sizeof(newRel));
     
-    for (uint8_t i = 0; i < instSize + 1; i++)
-        printf("%02X ", inst[i]);
-    printf("\n");
-    
-    printf("next_raw_offset=%d, oldTarget=%lld, rel=%d, newRel=%d\n", get_next_raw_offset(pe), oldTarget, rel, newRel);
+    // printf("next_raw_offset=%d, oldTarget=%lld, rel=%d, newRel=%d\n", get_next_raw_offset(pe), oldTarget, rel, newRel);
     
     /* add source instruction to the data (instruction which is patched) */
     
@@ -799,8 +798,9 @@ int patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t data_siz
     
     /* the patch itself */
     
-    //int32_t patch_riprel = get_next_raw_offset(pe) - (p->instOffset + p->instOffset + p->dispBytes);
-    //memcpy((pe->file + p->instOffset + p->dispOffset), &patch_riprel, sizeof(patch_riprel));    
+    int32_t patch_riprel = get_next_raw_offset(pe) - (p->instOffset + instSize);
+    
+    memcpy((pe->file + p->instOffset + p->dispOffset), &patch_riprel, sizeof(patch_riprel));    
     
     /*
     for (uint8_t i = 0; i < instSize + 1; i++)
@@ -808,6 +808,17 @@ int patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t data_siz
     printf("\n");
     */
     
+    
+    /*
+    int32_t rel_test = *(int32_t*)(pe->file + p->instOffset + p->dispOffset);
+    int64_t test_oldTarget = (p->instOffset + instSize) + rel_test;
+    
+    for (int64_t i = 0; i < new_data_size ; i++)
+    {
+        printf("%02X ", pe->file[test_oldTarget + i]);
+    }
+    printf("\n");
+    */
     
     
     
@@ -847,6 +858,8 @@ int main(void) {
     
 
     patch(&p1, ".patch", payload, sizeof(payload));
+    
+    
     
     save_pe(pe, "output.exe");
     
