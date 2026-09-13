@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <distorm.h>
+#include <mnemonics.h>
 
 #include <inttypes.h>
 
@@ -35,7 +36,7 @@ typedef struct {
 
 typedef struct {
     uint8_t  dispOffset;
-    uint8_t  dispSize;
+    uint8_t  dispBytes; // in bytes
     uint64_t instOffset; // instruction's offset in a file
 } RelocUnit; // relocation unit
 
@@ -71,8 +72,14 @@ typedef struct {
 } Reloc;
 
 
+
+
 Reloc reloc = {.units_len=0, .shifts_len=0};
 
+
+/* function prototypes */
+
+IMAGE_SECTION_HEADER *find_section_by_faddr(PE *pe, int64_t faddr);
 
 /* debug functions */
 
@@ -265,6 +272,11 @@ int insert_bytes(
 
 int insert_insts(PE *pe, size_t offset, const uint8_t *data, size_t data_len)
 {
+    IMAGE_SECTION_HEADER *section = find_section_by_faddr(pe, offset);
+    
+    if (section == NULL)
+        return -1;
+    
     int res = insert_bytes(&pe->file, &pe->file_size, offset, data, data_len);
     
     if (!res)
@@ -274,8 +286,17 @@ int insert_insts(PE *pe, size_t offset, const uint8_t *data, size_t data_len)
     
     s->addr0 = offset;
     s->delta = data_len;
-
     
+    
+    /*
+    DWORD new_virtual_size = section->Misc.VirtualSize + data_len;
+    DWORD new_raw_size     = align_up(section->SizeOfRawData + data_len, file_alignment);
+    
+    if (new_raw_size != section->SizeOfRawData)
+    {
+        // calloc(...)
+    }
+    */
 
     /*
     printf(
@@ -296,7 +317,7 @@ void append_reloc_unit(uint8_t instSize, uint8_t dispSize, uint64_t instOffset)
     RelocUnit *r = &reloc.units[reloc.units_len];
     
     r->dispOffset = instSize - bits_to_bytes(dispSize);
-    r->dispSize   = dispSize;
+    r->dispBytes  = bits_to_bytes(dispSize);
     r->instOffset = instOffset;
     
     //printf("saved reloc, dispOffset=%d, dispSize=%d, instOffset=%d\n", r->dispOffset, r->dispSize, r->instOffset);
@@ -474,7 +495,7 @@ void shift_insts(PE *pe)
         
         RelocUnit *r = &reloc.units[i];
        
-        uint8_t dispBytes = bits_to_bytes(r->dispSize);
+        uint8_t dispBytes = r->dispBytes;
         
         if (dispBytes == 0)
             continue;
@@ -580,7 +601,13 @@ void collect_reloc_info(PE *pe, IMAGE_SECTION_HEADER *sec)
         if (di->flags & FLAG_RIP_RELATIVE) {
             uint64_t target = INSTRUCTION_GET_RIP_TARGET(di);
             
-            //printf("    RIP: %llx -> %llx ; ", (unsigned long long)di->addr, (unsigned long long)target);
+            // printf("    RIP: opcode=%hu, %llx -> %llx\n", di->opcode, (unsigned long long)di->addr, (unsigned long long)target);
+            
+            if (di->opcode == I_JMP)
+            {
+                printf("I_JMP, dispSize=%zu, %llx -> %llx\n", di->dispSize, (uint64_t)di->addr, (uint64_t)target);
+            }
+            
             
             //printf("offset=%d, di->size: %d ", offset, di->size);
             //test_disp_hex(di->disp, di->dispSize);
@@ -614,6 +641,67 @@ void collect_reloc_info(PE *pe, IMAGE_SECTION_HEADER *sec)
 }
 
 
+/* _InstructionType from mnemonics.h */
+RelocUnit *find_riprel_inst(PE *pe, IMAGE_SECTION_HEADER *sec, uint8_t dispSizeBytes, _InstructionType opcode)
+{
+    size_t offset = sec->PointerToRawData;
+    size_t end    = offset + sec->SizeOfRawData;
+
+    ULONGLONG ImageBase = pe->nt->OptionalHeader.ImageBase;
+
+    _DInst insts[1];
+    
+    uint32_t count;
+    
+    _CodeInfo ci = {0};
+    
+    while (offset < end)
+    {
+
+        ci.codeOffset = ImageBase + offset;
+        ci.code       = pe->file + offset;
+        ci.codeLen    = (int)(end - offset);
+        ci.dt         = Decode64Bits;
+        ci.features   = DF_NONE;
+        
+        _DecodeResult r = distorm_decompose64(&ci, insts, 1, &count);
+
+        if (count == 0) // err
+            break;
+
+        _DInst *di = &insts[0];
+        
+        
+        /* switch bits to bytes (dispSize is either 8 or 32) */
+        
+        uint8_t dispBytes = bits_to_bytes(di->dispSize);
+        
+        if (di->flags & FLAG_RIP_RELATIVE && di->opcode == opcode && dispSizeBytes == dispBytes)
+        {
+            
+            
+            RelocUnit *r = malloc(sizeof(RelocUnit));
+            
+            if (r == NULL)
+                return NULL;
+            
+            r->dispOffset = di->size - dispBytes;
+            r->dispBytes  = dispBytes;
+            r->instOffset = offset;
+            
+            return r;
+        }
+        
+        offset += di->size;
+    }
+    
+    return NULL;
+}
+
+
+
+
+
 
 int main(void) {
     unsigned char payload[] = { 0x48, 0x31, 0xC0, 0xC3 };
@@ -631,13 +719,29 @@ int main(void) {
     }
     
     IMAGE_SECTION_HEADER *text = find_section(&p1, ".text");
+
     
-    IMAGE_SECTION_HEADER *sec = find_section_by_faddr(pe, text->PointerToRawData);
+    RelocUnit *p = find_riprel_inst(pe, text, 4, I_JMP);
     
-    if (sec)
-        printf("sec->Name: %s\n", sec->Name);
-    else
-        printf("sec not found");
+    if (p)
+    {
+        printf("instOffset: %llu, dispOffset: %u, dispBytes: %u\n", p->instOffset, p->dispOffset, p->dispBytes);
+        
+        uint8_t inst[16];
+        uint8_t instSize = p->dispOffset + p->dispBytes;
+        
+        memcpy(inst, (pe->file + p->instOffset), instSize);
+        
+        for (uint8_t i = 0; i < instSize; i++)
+        {
+            printf("%02X ", inst[i]);
+        }
+        
+        printf("\n");
+        
+        free(p);
+    }
+    
     
     /*
     collect_reloc_info(pe, text);
