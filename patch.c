@@ -17,6 +17,8 @@
 
 #define bits_to_bytes(nbits) (int)((nbits) / 8)
 
+#define NOP_OPCODE 0x90
+
 
 typedef unsigned char uint8_t;
 
@@ -874,7 +876,7 @@ int second_patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t d
     
     /* check for errors and calc insts_bytes_size */
     
-    uint8_t patch_inst_num = p2_capture_instructions(pe, text, sizeof(patch_inst_buffer), insts_buffer, sizeof(insts_buffer));
+    uint8_t  patch_inst_num = p2_capture_instructions(pe, text, sizeof(patch_inst_buffer), insts_buffer, sizeof(insts_buffer));
     uint16_t insts_bytes_size = 0;;
     
     for (uint8_t i = 0; i < patch_inst_num; i++)
@@ -902,7 +904,8 @@ int second_patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t d
     
     /* copy the source data (inserted then to the new section) */
     
-    uint8_t *new_section_data = malloc(data_size + insts_bytes_size + sizeof(patch_inst_buffer));
+    size_t  new_section_data_size = data_size + insts_bytes_size + sizeof(patch_inst_buffer);
+    uint8_t *new_section_data     = malloc(new_section_data_size);
     
     if (new_section_data == NULL)
         return -3;
@@ -928,10 +931,35 @@ int second_patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t d
     memcpy(new_section_data + data_size + insts_bytes_size, patch_inst_buffer, sizeof(patch_inst_buffer));
     
     
+    // patch in the .text
+    
+    // calc rel32 (and create a jmp instruction)
+    
+    target = get_next_raw_offset(pe);
+    rel    = target - (text->PointerToRawData + sizeof(patch_inst_buffer));
+    
+    memcpy(patch_inst_buffer + 1, &rel, sizeof(rel));
+    
+    /* 
+       copy the jmp-instruction
+       and if (insts_bytes_size > sizeof(patch_inst_buffer))
+       fill this space with nops (0x90 on x86/x64)
+    */
+    
+    for (uint16_t i = 0; i < insts_bytes_size; i++)
+        pe->file[text->PointerToRawData + i] = NOP_OPCODE;
+    
+    memcpy(pe->file + text->PointerToRawData, patch_inst_buffer, sizeof(patch_inst_buffer));
+    
+    add_section(pe, new_sec_name, new_section_data, new_section_data_size);
+    
+    
+    /*
     printf("new_section_data: ");
     for (int i = 0; i < (data_size + insts_bytes_size + sizeof(patch_inst_buffer)); i++)
         printf("%02X ", new_section_data[i]);
     printf("\n");
+    */
     
     
     // calc rel32 addr 
@@ -986,7 +1014,7 @@ int main(void) {
     second_patch(pe, ".patch", payload, sizeof(payload));
     
     
-    //save_pe(pe, "output.exe");
+    save_pe(pe, "output.exe");
 
     //IMAGE_SECTION_HEADER *text = find_section(pe, ".text");    
     //collect_reloc_info(pe, text);
