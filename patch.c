@@ -868,16 +868,14 @@ cleanup:
 int second_patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t data_size)
 {
     Instruction insts_buffer[8];
-    uint8_t patch_inst[5] = {0xE9, 0x00, 0x00, 0x00, 0x00}; // jmp rel32
+    uint8_t patch_inst_buffer[5] = {0xE9, 0x00, 0x00, 0x00, 0x00}; // jmp rel32
     
     IMAGE_SECTION_HEADER *text = find_section(pe, ".text");
     
+    /* check for errors and calc insts_bytes_size */
     
-    
-    uint8_t patch_inst_num = p2_capture_instructions(pe, text, sizeof(patch_inst), insts_buffer, sizeof(insts_buffer));
-    
+    uint8_t patch_inst_num = p2_capture_instructions(pe, text, sizeof(patch_inst_buffer), insts_buffer, sizeof(insts_buffer));
     uint16_t insts_bytes_size = 0;;
-    
     
     for (uint8_t i = 0; i < patch_inst_num; i++)
     {
@@ -902,12 +900,52 @@ int second_patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t d
         insts_bytes_size += di->size;
     }
     
-    uint8_t *source_data = malloc(insts_bytes_size);
+    /* copy the source data (inserted then to the new section) */
     
-    if (source_data == NULL)
+    uint8_t *new_section_data = malloc(data_size + insts_bytes_size + sizeof(patch_inst_buffer));
+    
+    if (new_section_data == NULL)
         return -3;
     
-    memcpy(source_data, pe->file + insts_buffer[0].instOffset, insts_bytes_size);
+    // copy data
+    memcpy(new_section_data, data, data_size);
+    
+    // copy insts from the source
+    memcpy(new_section_data + data_size, pe->file + insts_buffer[0].instOffset, insts_bytes_size);
+    
+    // copy jmp instruction in order to return to the .text section
+    
+    uint64_t target = text->PointerToRawData + sizeof(patch_inst_buffer); // afterPatchInstAddr
+    int32_t  rel    = target - (get_next_raw_offset(pe) + data_size + insts_bytes_size + sizeof(patch_inst_buffer));
+    
+    printf("target=%lld, rel=%d\n", target, rel);
+    
+    // +1 because of the dispOffset (displacement-offset)
+    memcpy(patch_inst_buffer + 1, &rel, sizeof(rel));
+    
+    // copy the instruction itself
+    
+    memcpy(new_section_data + data_size + insts_bytes_size, patch_inst_buffer, sizeof(patch_inst_buffer));
+    
+    
+    printf("new_section_data: ");
+    for (int i = 0; i < (data_size + insts_bytes_size + sizeof(patch_inst_buffer)); i++)
+        printf("%02X ", new_section_data[i]);
+    printf("\n");
+    
+    
+    // calc rel32 addr 
+    
+    
+    
+    
+    
+    // memcpy(new_section_data + data_size + insts_bytes_size, 
+    
+    // memcpy(source_data, pe->file + insts_buffer[0].instOffset, insts_bytes_size);
+    
+    
+    
     
     
     
@@ -919,7 +957,7 @@ int second_patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t d
 
 cleanup:
 
-    free(source_data);
+    free(new_section_data);
     return 0;
 }
 
