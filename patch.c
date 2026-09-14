@@ -181,9 +181,7 @@ size_t calc_sec_table_space(PE *pe)
     // потом берем и добавляем к этому байты всех существующих секций (section_count * sizeof(struct ...))
     // и потом из абсолютного оффсета (PointerToRawData) (он именно в файле ; если бы мы не сделали минус file то там мы работали с адресом в памяти на runtime, что ненужно фактически)
     // вычитаем section_table_end (оффсет конца table)
-    
-    printf("here2\n");
-    
+     
     size_t section_table_end = (size_t)((unsigned char *)pe->sections - pe->file) + section_count * sizeof(IMAGE_SECTION_HEADER);
     size_t first_section_raw = pe->sections[0].PointerToRawData;
     size_t free_space = first_section_raw - section_table_end;
@@ -431,7 +429,6 @@ IMAGE_SECTION_HEADER *find_section_by_faddr(PE *pe, int64_t faddr)
 }
 
 
-/* get the PointerToRawData of the next section */
 DWORD get_next_raw_offset(PE *pe)
 {
     WORD section_count         = pe->nt->FileHeader.NumberOfSections;
@@ -441,7 +438,6 @@ DWORD get_next_raw_offset(PE *pe)
     
     return new_raw;
 }
-
 
 int add_section(PE *pe, const char *name, const uint8_t *data, size_t data_size) {
     WORD section_count         = pe->nt->FileHeader.NumberOfSections;
@@ -454,8 +450,7 @@ int add_section(PE *pe, const char *name, const uint8_t *data, size_t data_size)
 
     // aligning file & virtual addresses ; filling the gap with 0x00 in file
 
-    DWORD new_raw          = get_next_raw_offset(pe);
-    
+    DWORD new_raw          = align_up(last->PointerToRawData + last->SizeOfRawData, pe->file_alignment);
     DWORD new_rva          = align_up(last->VirtualAddress + last->Misc.VirtualSize, pe->section_alignment);
     DWORD new_raw_size     = align_up(data_size, pe->file_alignment);
     DWORD new_virtual_size = (DWORD)data_size;
@@ -731,7 +726,7 @@ int patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t data_siz
     }
 
 
-    printf("instOffset: %llu, dispOffset: %u, dispBytes: %u\n", p->instOffset, p->dispOffset, p->dispBytes);
+    //printf("instOffset: %llu, dispOffset: %u, dispBytes: %u\n", p->instOffset, p->dispOffset, p->dispBytes);
     
     
     /* make copy of the source instruction */
@@ -745,10 +740,15 @@ int patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t data_siz
     
     /* reading as int32_t (4 bytes) */
     
+    DWORD section_raw_offset = get_next_raw_offset(pe);
+    
     int32_t rel       = *(int32_t*)(pe->file + p->instOffset + p->dispOffset);
     int64_t oldTarget = (p->instOffset + instSize) + rel;
     
-    int32_t newRel    = oldTarget - (get_next_raw_offset(pe) + instSize);
+    int32_t newRel    = oldTarget - (section_raw_offset + instSize);
+    
+    
+    
     
     /*
     for (uint8_t i = 0; i < instSize + 1; i++)
@@ -756,10 +756,20 @@ int patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t data_siz
     printf("\n");
     */
     
+    
     // write the new relative-address to the copied instruction (which is inserted in the data)
     
-    memcpy(inst + p->dispOffset, &newRel, sizeof(newRel));
     
+    memcpy(inst + p->dispOffset, &newRel, sizeof(newRel));
+
+    /*
+    printf("inst (insert): ");
+    for (uint8_t i = 0; i < instSize; i++)
+        printf("%02X ", inst[i]);
+    printf("\n");
+    */
+    
+
     // printf("next_raw_offset=%d, oldTarget=%lld, rel=%d, newRel=%d\n", get_next_raw_offset(pe), oldTarget, rel, newRel);
     
     /* add source instruction to the data (instruction which is patched) */
@@ -798,9 +808,13 @@ int patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t data_siz
     
     /* the patch itself */
     
-    int32_t patch_riprel = get_next_raw_offset(pe) - (p->instOffset + instSize);
+    int32_t patch_riprel = section_raw_offset - (p->instOffset + instSize);
+    
+    printf("patch_riprel (target): %d\n", patch_riprel);
     
     memcpy((pe->file + p->instOffset + p->dispOffset), &patch_riprel, sizeof(patch_riprel));    
+    
+    
     
     /*
     for (uint8_t i = 0; i < instSize + 1; i++)
@@ -809,14 +823,39 @@ int patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t data_siz
     */
     
     
-    /*
+    
     int32_t rel_test = *(int32_t*)(pe->file + p->instOffset + p->dispOffset);
     int64_t test_oldTarget = (p->instOffset + instSize) + rel_test;
     
+    /*
     for (int64_t i = 0; i < new_data_size ; i++)
     {
         printf("%02X ", pe->file[test_oldTarget + i]);
     }
+    printf("\n");
+    */
+
+    
+    WORD section_count         = pe->nt->FileHeader.NumberOfSections;
+    IMAGE_SECTION_HEADER *last = &pe->sections[section_count - 1];
+
+    printf("pointer to raw data: %d\n", last->PointerToRawData);
+    printf("source (patched) inst target: %d\n", test_oldTarget);
+
+
+    printf("test data: ");
+    for (size_t i = 0; i < new_data_size; i++)
+        printf("%02X ", pe->file[test_oldTarget + i]);
+    
+    
+    printf("\n");
+
+    /*
+    printf("section data: ");
+    for (size_t i = 0; i < new_data_size; i++)
+    {
+        printf("%02X ", pe->file[last->PointerToRawData + i]);
+    
     printf("\n");
     */
     
