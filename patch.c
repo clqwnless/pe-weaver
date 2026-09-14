@@ -724,10 +724,6 @@ int patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t data_siz
         ret_code = -2;
         goto cleanup;
     }
-
-
-    //printf("instOffset: %llu, dispOffset: %u, dispBytes: %u\n", p->instOffset, p->dispOffset, p->dispBytes);
-    
     
     /* make copy of the source instruction */
     
@@ -745,33 +741,14 @@ int patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t data_siz
     int32_t rel       = *(int32_t*)(pe->file + p->instOffset + p->dispOffset);
     int64_t oldTarget = (p->instOffset + instSize) + rel;
     
+    printf("old_target: %d\n", oldTarget);
+    
     int32_t newRel    = oldTarget - (section_raw_offset + instSize);
-    
-    
-    
-    
-    /*
-    for (uint8_t i = 0; i < instSize + 1; i++)
-        printf("%02X ", inst[i]);
-    printf("\n");
-    */
-    
     
     // write the new relative-address to the copied instruction (which is inserted in the data)
     
-    
     memcpy(inst + p->dispOffset, &newRel, sizeof(newRel));
 
-    /*
-    printf("inst (insert): ");
-    for (uint8_t i = 0; i < instSize; i++)
-        printf("%02X ", inst[i]);
-    printf("\n");
-    */
-    
-
-    // printf("next_raw_offset=%d, oldTarget=%lld, rel=%d, newRel=%d\n", get_next_raw_offset(pe), oldTarget, rel, newRel);
-    
     /* add source instruction to the data (instruction which is patched) */
     
     new_data = malloc(data_size + instSize);
@@ -798,77 +775,26 @@ int patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t data_siz
         goto cleanup;
     }
     
-    
-    
-    /*
-    for (uint8_t i = 0; i < instSize + 1; i++)
-        printf("%02X ", *(pe->file + p->instOffset + i));
-    printf("\n");
-    */
-    
     /* the patch itself */
     
     int32_t patch_riprel = section_raw_offset - (p->instOffset + instSize);
     
-    printf("patch_riprel (target): %d\n", patch_riprel);
-    
-    memcpy((pe->file + p->instOffset + p->dispOffset), &patch_riprel, sizeof(patch_riprel));    
+    memcpy((pe->file + p->instOffset + p->dispOffset), &patch_riprel, sizeof(patch_riprel));
     
     
-    
-    /*
-    for (uint8_t i = 0; i < instSize + 1; i++)
-        printf("%02X ", *(pe->file + p->instOffset + i));
-    printf("\n");
-    */
-    
-    
-    
-    int32_t rel_test = *(int32_t*)(pe->file + p->instOffset + p->dispOffset);
-    int64_t test_oldTarget = (p->instOffset + instSize) + rel_test;
+    /* test */
     
     /*
-    for (int64_t i = 0; i < new_data_size ; i++)
-    {
-        printf("%02X ", pe->file[test_oldTarget + i]);
-    }
-    printf("\n");
-    */
-
+    int32_t rell    = *(int32_t*)(pe->file + p->instOffset + p->dispOffset);
+    int32_t targett = p->instOffset + p->dispOffset + p->dispBytes + rell;
     
-    WORD section_count         = pe->nt->FileHeader.NumberOfSections;
-    IMAGE_SECTION_HEADER *last = &pe->sections[section_count - 1];
-
-    printf("pointer to raw data: %d\n", last->PointerToRawData);
-    printf("source (patched) inst target: %d\n", test_oldTarget);
-
-
-    printf("test data: ");
-    for (size_t i = 0; i < new_data_size; i++)
-        printf("%02X ", pe->file[test_oldTarget + i]);
-    
-    
-    printf("\n");
-
-    /*
-    printf("section data: ");
-    for (size_t i = 0; i < new_data_size; i++)
-    {
-        printf("%02X ", pe->file[last->PointerToRawData + i]);
-    
-    printf("\n");
+    printf("target: %d\n", targett);
     */
     
+    int32_t rell    = *(int32_t*)(inst + p->dispOffset);
+    int32_t targett = section_raw_offset + p->dispOffset + p->dispBytes + rell;
     
-    
-    
-    /*
-    for (uint8_t i = 0; i < instSize; i++)
-    {
-        printf("%02X ", inst[i]);
-    }
-    */
-    
+    printf("rel: %d, section_raw_offset: %d, target: %d\n", rell, section_raw_offset, targett);
     
 cleanup:
     
@@ -881,23 +807,24 @@ cleanup:
 
 
 int main(void) {
-    unsigned char payload[] = { 0x48, 0x31, 0xC0, 0xC3 };
+    unsigned char payload[] = {0xEB, 0xFE};
 
     PE p1;
     PE *pe = &p1;
     
-    int res;
+    int ret;
     
     
-    if ((res = load_pe("cmd.exe", &p1)) != 0)
+    if ((ret = load_pe("cmd.exe", &p1)) != 0)
     {
-        fprintf(stderr, "err: load_pe, err_code=%d\n", res);
+        fprintf(stderr, "err: load_pe, err_code=%d\n", ret);
         return 1;
     }
     
 
-    patch(&p1, ".patch", payload, sizeof(payload));
+    ret = patch(&p1, ".patch", payload, sizeof(payload));
     
+    printf("patch ret: %d\n", ret);
     
     
     save_pe(pe, "output.exe");
