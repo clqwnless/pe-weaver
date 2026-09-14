@@ -71,6 +71,10 @@ typedef struct {
     uint64_t shifts_len;
 } Reloc;
 
+typedef struct {
+    _DInst di;
+    uint64_t instOffset;
+} Instruction;
 
 
 
@@ -604,10 +608,13 @@ void collect_reloc_info(PE *pe, IMAGE_SECTION_HEADER *sec)
             
             // printf("    RIP: opcode=%hu, %llx -> %llx\n", di->opcode, (unsigned long long)di->addr, (unsigned long long)target);
             
+            
+            /*
             if (di->opcode == I_JMP)
             {
                 printf("I_JMP, dispSize=%zu, %llx -> %llx\n", di->dispSize, (uint64_t)di->addr, (uint64_t)target);
             }
+            */
             
             
             //printf("offset=%d, di->size: %d ", offset, di->size);
@@ -624,7 +631,7 @@ void collect_reloc_info(PE *pe, IMAGE_SECTION_HEADER *sec)
             if (op->type == O_PC)
             {
                 uint64_t target = INSTRUCTION_GET_TARGET(di);
-                //printf("    PC:  %llx -> %llx, di->imm.addr=%llx ; disp=%llx\n", (unsigned long long)di->addr, (unsigned long long)target, (unsigned long long)di->imm.addr, di->disp);
+                // printf("    PC:  %lld -> %lld, di->imm.addr=%lld ; disp=%lld, dispSize=%d\n", (unsigned long long)di->addr, (unsigned long long)target, (unsigned long long)di->imm.addr, di->disp, di->dispSize);
                 
                 append_reloc_unit(di->size, di->dispSize, offset);
             }
@@ -699,6 +706,60 @@ RelocUnit *find_riprel_inst(PE *pe, IMAGE_SECTION_HEADER *sec, uint8_t dispSizeB
     return NULL;
 }
 
+uint8_t p2_capture_instructions(
+    PE *pe,
+    IMAGE_SECTION_HEADER *sec,
+    size_t patch_inst_size,
+    
+    Instruction *insts_buffer,
+    size_t buffer_size
+) {
+    size_t offset   = sec->PointerToRawData;
+    size_t end      = offset + sec->SizeOfRawData;
+    uint32_t count  = 0;
+    
+    size_t instBytesCount = 0;
+    
+    uint8_t i = 0;
+    
+    ULONGLONG ImageBase = pe->nt->OptionalHeader.ImageBase;
+
+    _DInst insts[1];
+    _CodeInfo ci = {0};
+    
+    while (offset < end && instBytesCount < patch_inst_size && i < buffer_size)
+    {
+        
+        
+        ci.codeOffset = ImageBase + offset;
+        ci.code       = pe->file + offset;
+        ci.codeLen    = (int)(end - offset);
+        ci.dt         = Decode64Bits;
+        ci.features   = DF_NONE;
+        
+        _DecodeResult r = distorm_decompose64(&ci, insts, 1, &count);
+
+        if (count == 0) // err
+            break;
+
+        _DInst *di = &insts[0];
+
+        //printf("cycle, i=%d, di->opcode: %d, size=%d\n", i, di->opcode, di->size);
+
+        Instruction *inst = &insts_buffer[i];
+
+        inst->di = *di;
+        inst->instOffset = offset;
+        
+        /* increment */
+        
+        offset += di->size;
+        instBytesCount += di->size;
+        i++;
+    }
+    
+    return i;
+}
 
 
 
@@ -804,6 +865,64 @@ cleanup:
     return ret_code;
 }
 
+int second_patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t data_size)
+{
+    Instruction insts_buffer[8];
+    uint8_t patch_inst[5] = {0xE9, 0x00, 0x00, 0x00, 0x00}; // jmp rel32
+    
+    IMAGE_SECTION_HEADER *text = find_section(pe, ".text");
+    
+    
+    
+    uint8_t patch_inst_num = p2_capture_instructions(pe, text, sizeof(patch_inst), insts_buffer, sizeof(insts_buffer));
+    
+    uint16_t insts_bytes_size = 0;;
+    
+    
+    for (uint8_t i = 0; i < patch_inst_num; i++)
+    {
+        Instruction *instruction = &insts_buffer[i];
+        _DInst *di = &instruction->di;
+        
+        if (di->flags & FLAG_RIP_RELATIVE)
+        {
+            fprintf(stderr, "rip-relative instructions at the beginning of the .text section are not supported\n");
+            return -1;
+        }
+        
+        for (uint8_t j = 0; j < di->opsNo; j++)
+        {
+            if (di->ops[i].type == O_PC)
+            {
+                fprintf(stderr, "O_PC instructions at the beginning of the .text section are not supported\n");
+                return -2;
+            }
+        }
+        
+        insts_bytes_size += di->size;
+    }
+    
+    uint8_t *source_data = malloc(insts_bytes_size);
+    
+    if (source_data == NULL)
+        return -3;
+    
+    memcpy(source_data, pe->file + insts_buffer[0].instOffset, insts_bytes_size);
+    
+    
+    
+    /*
+    for (int i = 0; i < insts_bytes_size; i++)
+        printf("%02X ", source_data[i]);
+    printf("\n");
+    */
+
+cleanup:
+
+    free(source_data);
+    return 0;
+}
+
 
 
 int main(void) {
@@ -821,18 +940,22 @@ int main(void) {
         return 1;
     }
     
-
+    /*
     ret = patch(&p1, ".patch", payload, sizeof(payload));
-    
     printf("patch ret: %d\n", ret);
+    */
+    
+    second_patch(pe, ".patch", payload, sizeof(payload));
     
     
-    save_pe(pe, "output.exe");
-    
+    //save_pe(pe, "output.exe");
+
+    //IMAGE_SECTION_HEADER *text = find_section(pe, ".text");    
+    //collect_reloc_info(pe, text);
+
     
     /*
-    IMAGE_SECTION_HEADER *text = find_section(&p1, ".text");
-    
+    IMAGE_SECTION_HEADER *text = find_section(&p1, ".text");    
     collect_reloc_info(pe, text);
     
     uint8_t data[2] = {0x89, 0xC0}; // nops
