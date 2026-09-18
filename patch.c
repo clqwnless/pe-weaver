@@ -640,10 +640,14 @@ void collect_reloc_info(PE *pe, IMAGE_SECTION_HEADER *sec)
             if (op->type == O_PC)
             {
                 uint64_t target = INSTRUCTION_GET_TARGET(di);
-                // printf("    PC:  %lld -> %lld, di->imm.addr=%lld ; disp=%lld, dispSize=%d\n", (unsigned long long)di->addr, (unsigned long long)target, (unsigned long long)di->imm.addr, di->disp, di->dispSize);
+                printf("    PC:  %lld -> %lld, op->size=%hhd, di->imm.addr=%lld ; disp=%lld, dispSize=%d\n", (uint64_t)di->addr, (uint64_t)target, op->size, (uint64_t)di->imm.addr, di->disp, di->dispSize);
                 
-                append_reloc_unit(di->size, di->dispSize, offset);
+                uint8_t dispSize = op->size;
+                
+                append_reloc_unit(di->size, dispSize, offset);
             }
+            
+
             
             /*
             if (op->type == O_PTR)
@@ -752,12 +756,15 @@ uint8_t p2_capture_instructions(
     Instruction *insts_buffer,
     size_t buffer_size
 ) {
-    IMAGE_SECTION_HEADER *text = find_section(pe, ".text");
+    IMAGE_SECTION_HEADER *sec = find_entrypoint_section(pe);
     
-    if (text == NULL)
+    if (pe == NULL)
         return -1;
     
-    size_t end      = offset + text->SizeOfRawData;
+    if (offset < sec->PointerToRawData)
+        return -2;
+    
+    size_t end      = sec->PointerToRawData + sec->SizeOfRawData;
     uint32_t count  = 0;
     
     size_t instBytesCount = 0;
@@ -988,63 +995,15 @@ int main(void) {
     }
     
     printf("after load_pe\n");
-    
-    
-    /*
-    DWORD ep = pe->nt->OptionalHeader.AddressOfEntryPoint;
-    for (int i = 0; i < pe->nt->FileHeader.NumberOfSections; i++)
-    {
-        IMAGE_SECTION_HEADER *sec = &pe->sections[i];
-        
-        if (ep >= sec->VirtualAddress && ep <= (sec->VirtualAddress + sec->Misc.VirtualSize))
-        {
-            printf("found section: %s\n", sec->Name);
-            break;
-        }  
-    }
-    */
-    
-    /*
-    ret = patch(&p1, ".patch", payload, sizeof(payload));
-    printf("patch ret: %d\n", ret);
-    */
-    
-    //printf("faddr entrypoint: %u\n", calc_file_entry_point(pe));
-    
-    //clean_efi_cert(pe);
+   
     
 
-    second_patch(pe, ".patch", payload, sizeof(payload));
-    
-    
-    save_pe(pe, "output.exe");
+    //second_patch(pe, ".patch", payload, sizeof(payload));
+    //save_pe(pe, "output.exe");
 
-    //IMAGE_SECTION_HEADER *text = find_section(pe, ".text");    
-    //collect_reloc_info(pe, text);
-
-    
-    /*
-    IMAGE_SECTION_HEADER *text = find_section(&p1, ".text");    
+    IMAGE_SECTION_HEADER *text = find_section(pe, ".text");    
     collect_reloc_info(pe, text);
     
-    uint8_t data[2] = {0x89, 0xC0}; // nops
-    res = insert_insts(pe, text->PointerToRawData, data, sizeof(data));    
-    
-    //printf("insert_insts res=%d, shifts_len=%d\n", res, reloc.shifts_len);
-    
-    shift_insts(pe);
-    */
-   
-    //res = save_pe(pe, "output.exe");
-    //printf("res: %d\n", res);
-    
-    //printf("units_len=%llu\n", reloc.units_len);
-    // add_section(&p1, "patched.exe", ".patch", payload, sizeof(payload)); 
-    
-
-    
-
-    //printf("section added\n");
     return 0;
 }
 
