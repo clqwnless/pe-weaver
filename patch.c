@@ -331,6 +331,38 @@ void append_reloc_unit(uint8_t instSize, uint8_t dispSize, uint64_t instOffset)
 
 /* loaders (init) */
 
+int init_pe(PE *pe, uint8_t *file, long file_size)
+{
+    IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)file;
+    
+    
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+        return -3;
+    
+    // nt header
+    
+    IMAGE_NT_HEADERS64 *nt = (IMAGE_NT_HEADERS64 *)(file + dos->e_lfanew);
+    
+    if (nt->Signature != IMAGE_NT_SIGNATURE || nt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64)
+        return -4;
+    
+    IMAGE_SECTION_HEADER *sections = IMAGE_FIRST_SECTION(nt);
+    
+    // initializing structure
+    
+    pe->dos       = dos;
+    pe->nt        = nt;
+    pe->sections  = sections;
+
+    pe->file_alignment    = nt->OptionalHeader.FileAlignment;
+    pe->section_alignment = nt->OptionalHeader.SectionAlignment;
+    
+    pe->file      = file;
+    pe->file_size = file_size;
+    
+    return 0;
+}
+
 int load_pe(const char *path, PE *pe)
 {
     FILE *f        = fopen(path, "rb");
@@ -353,40 +385,10 @@ int load_pe(const char *path, PE *pe)
         goto cleanup;
     }
     
-    // dos (if needed)
+    result = init_pe(pe, file, file_size);
     
-    IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)file;
-    
-    
-    if (dos->e_magic != IMAGE_DOS_SIGNATURE)
-    {
-        result = -3;
+    if (result != 0)
         goto cleanup;
-    }
-    
-    // nt header
-    
-    IMAGE_NT_HEADERS64 *nt = (IMAGE_NT_HEADERS64 *)(file + dos->e_lfanew);
-    
-    if (nt->Signature != IMAGE_NT_SIGNATURE || nt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64)
-    {
-        result = -4;
-        goto cleanup;
-    }
-    
-    IMAGE_SECTION_HEADER *sections = IMAGE_FIRST_SECTION(nt);
-    
-    // initializing structure
-    
-    pe->dos       = dos;
-    pe->nt        = nt;
-    pe->sections  = sections;
-
-    pe->file_alignment    = nt->OptionalHeader.FileAlignment;
-    pe->section_alignment = nt->OptionalHeader.SectionAlignment;
-    
-    pe->file      = file;
-    pe->file_size = file_size;
     
     pe->path      = path;
     
@@ -405,9 +407,13 @@ cleanup:
 /* main pe api */
 
 IMAGE_SECTION_HEADER *find_section(PE *pe, const char *searched_name)
-{ 
+{
+    printf("find_section, ");
+    printf("num of sections: %d\n", pe->nt->FileHeader.NumberOfSections);
+    
     for (int i = 0; i < pe->nt->FileHeader.NumberOfSections; i++)
     {
+        
         IMAGE_SECTION_HEADER *s = &pe->sections[i];
         
         if (strcmp(s->Name, searched_name) == 0)
@@ -488,8 +494,12 @@ int add_section(PE *pe, const char *name, const uint8_t *data, size_t data_size)
 
     free(pe->file);
     
-    pe->file = new_file;
-    pe->file_size = new_file_size;
+    //pe->file = new_file;
+    //pe->file_size = new_file_size;
+    
+    /* reinitializing because the pe->file was changed and that means that the pe->nt and ... pointers point to freed memory */
+    
+    init_pe(pe, new_file, new_file_size);
     
     return 0;
 }
@@ -906,20 +916,24 @@ int second_patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t d
         Instruction *instruction = &insts_buffer[i];
         _DInst *di = &instruction->di;
         
+        //printf("di->opcode: %d, di->dispSize: %d, di->opsNo: %d\n", di->opcode, di->dispSize, di->opsNo);
+        
         if (di->flags & FLAG_RIP_RELATIVE)
         {
             fprintf(stderr, "rip-relative instructions at the beginning of the .text section are not supported\n");
             return -1;
         }
         
+        
         for (uint8_t j = 0; j < di->opsNo; j++)
         {
-            if (di->ops[i].type == O_PC)
+            if (di->ops[j].type == O_PC)
             {
                 fprintf(stderr, "O_PC instructions at the beginning of the .text section are not supported\n");
                 return -2;
             }
         }
+        
         
         insts_bytes_size += di->size;
     }
@@ -945,10 +959,18 @@ int second_patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t d
     uint64_t target = entrypoint + sizeof(patch_inst_buffer); // afterPatchInstAddr
     int32_t  rel    = target - (get_next_raw_offset(pe) + data_size + insts_bytes_size + sizeof(patch_inst_buffer));
     
-    printf(".patch return: target=%lld, rel=%d\n", target, rel);
+    printf(".patch to .text: target=%lld, rel=%d\n", target, rel);
     
     // +1 because of the dispOffset (displacement-offset)
     memcpy(patch_inst_buffer + 1, &rel, sizeof(rel));
+    
+    /*
+    printf(".patch to .text patch_buffer: ");
+    for (int i = 0; i < sizeof(patch_inst_buffer); i++)
+        printf("%02X ", patch_inst_buffer[i]);
+    printf("\n");
+    printf("backwards: %d\n", *(int32_t*)(patch_inst_buffer + 1));
+    */
     
     // copy the instruction itself
     
@@ -992,15 +1014,15 @@ int second_patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t d
     
     
     
-    
+    printf("dnum of sections: %d\n", pe->nt->FileHeader.NumberOfSections);
     
     add_section(pe, new_sec_name, new_section_data, new_section_data_size);
 
-    /* test */
+    /* test .text jmp */
     
+    /*
     int32_t rel_test = *(int32_t*)(pe->file + entrypoint + 1);
     uint64_t target_test = entrypoint + sizeof(patch_inst_buffer) + rel_test;
-    
     
     printf("rel_test: %d, target_test: %llu\n", rel_test, target_test);
     printf("target test: ");
@@ -1011,6 +1033,30 @@ int second_patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t d
     }
 
     printf("\n");
+    */
+
+    /* test .patch jmp */
+    
+    IMAGE_SECTION_HEADER *sec = find_section(pe, new_sec_name);
+    if (sec == NULL)
+        printf("sec is null\n");
+    
+    //printf("sec->name: %s\n", sec->Name);
+    
+    
+    //int32_t rel_test = *(int32_t*)(pe->file + sec->PointerToRawData + new_section_data_size - sizeof(patch_inst_buffer));
+    
+    //printf("rel_test: %d\n", rel_test);
+    
+    //int32_t rel_test = *(int32_t*)(pe->file + new_section_data + data_size + insts_bytes_size + 1);
+    //uint64_t target_test = () + rel_test;
+    
+    //printf("rel_test: %d, target_test\n", rel_test, target_test);
+    
+    
+    
+    
+    
 
 
 
@@ -1067,11 +1113,13 @@ int main(void) {
     //printf("faddr entrypoint: %u\n", calc_file_entry_point(pe));
     
     //clean_efi_cert(pe);
-    //add_section(pe, ".patch", payload, sizeof(payload));
+    
+    printf("num of sections: %d\n", pe->nt->FileHeader.NumberOfSections);
+    add_section(pe, ".patch", payload, sizeof(payload));
+    printf("num of sections: %d\n", pe->nt->FileHeader.NumberOfSections);
     
     
-    
-    second_patch(pe, ".patch", payload, sizeof(payload));
+    //second_patch(pe, ".patch", payload, sizeof(payload));
     
     
     save_pe(pe, "output.exe");
