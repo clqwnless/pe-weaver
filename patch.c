@@ -408,9 +408,6 @@ cleanup:
 
 IMAGE_SECTION_HEADER *find_section(PE *pe, const char *searched_name)
 {
-    printf("find_section, ");
-    printf("num of sections: %d\n", pe->nt->FileHeader.NumberOfSections);
-    
     for (int i = 0; i < pe->nt->FileHeader.NumberOfSections; i++)
     {
         
@@ -904,12 +901,12 @@ int second_patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t d
     
     uint32_t entrypoint = calc_code_entrypoint(pe);
     
-    printf("entrypoint: %u\n", entrypoint);
+    //printf("entrypoint: %u\n", entrypoint);
     
     uint8_t  patch_inst_num = p2_capture_instructions(pe, entrypoint, sizeof(patch_inst_buffer), insts_buffer, sizeof(insts_buffer));
     uint16_t insts_bytes_size = 0;
     
-    printf("patch_inst_num: %u\n", patch_inst_num);
+    //printf("patch_inst_num: %u\n", patch_inst_num);
     
     for (uint8_t i = 0; i < patch_inst_num; i++)
     {
@@ -999,7 +996,7 @@ int second_patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t d
         pe->file[entrypoint + i] = NOP_OPCODE;
     memcpy(pe->file + entrypoint, patch_inst_buffer, sizeof(patch_inst_buffer));
     
-    /*
+    
     printf("\nentrypoint (text): ");
     
     for (int i = 0; i < insts_bytes_size; i++)
@@ -1008,13 +1005,10 @@ int second_patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t d
     }
     
     printf("\n");
-    */
     
     
     
     
-    
-    printf("dnum of sections: %d\n", pe->nt->FileHeader.NumberOfSections);
     
     add_section(pe, new_sec_name, new_section_data, new_section_data_size);
 
@@ -1038,21 +1032,19 @@ int second_patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t d
     /* test .patch jmp */
     
     IMAGE_SECTION_HEADER *sec = find_section(pe, new_sec_name);
-    if (sec == NULL)
-        printf("sec is null\n");
+
     
-    //printf("sec->name: %s\n", sec->Name);
+    int32_t rel_test     = *(int32_t*)(pe->file + sec->PointerToRawData + new_section_data_size - sizeof(patch_inst_buffer) + 1);
+    uint64_t target_test = sec->PointerToRawData + new_section_data_size + rel_test;
     
     
-    //int32_t rel_test = *(int32_t*)(pe->file + sec->PointerToRawData + new_section_data_size - sizeof(patch_inst_buffer));
     
-    //printf("rel_test: %d\n", rel_test);
+    printf("rel_test: %d, target_test: %lld\n", rel_test, target_test);
     
-    //int32_t rel_test = *(int32_t*)(pe->file + new_section_data + data_size + insts_bytes_size + 1);
-    //uint64_t target_test = () + rel_test;
-    
-    //printf("rel_test: %d, target_test\n", rel_test, target_test);
-    
+    for (int i = 0; i < insts_bytes_size; i++)
+        printf("%02X ", pe->file[target_test + i]);
+    printf("\n");
+
     
     
     
@@ -1089,7 +1081,7 @@ int clean_efi_cert(PE *pe)
 
 int main(void) {
     //unsigned char payload[] = {0xEB, 0xFE};
-    unsigned char payload[] = {NOP_OPCODE};
+    uint8_t payload[] = {};
 
     PE p1;
     PE *pe = &p1;
@@ -1105,6 +1097,21 @@ int main(void) {
     
     printf("after load_pe\n");
     
+    
+    /*
+    DWORD ep = pe->nt->OptionalHeader.AddressOfEntryPoint;
+    for (int i = 0; i < pe->nt->FileHeader.NumberOfSections; i++)
+    {
+        IMAGE_SECTION_HEADER *sec = &pe->sections[i];
+        
+        if (ep >= sec->VirtualAddress && ep <= (sec->VirtualAddress + sec->Misc.VirtualSize))
+        {
+            printf("found section: %s\n", sec->Name);
+            break;
+        }  
+    }
+    */
+    
     /*
     ret = patch(&p1, ".patch", payload, sizeof(payload));
     printf("patch ret: %d\n", ret);
@@ -1114,12 +1121,8 @@ int main(void) {
     
     //clean_efi_cert(pe);
     
-    printf("num of sections: %d\n", pe->nt->FileHeader.NumberOfSections);
-    add_section(pe, ".patch", payload, sizeof(payload));
-    printf("num of sections: %d\n", pe->nt->FileHeader.NumberOfSections);
-    
-    
-    //second_patch(pe, ".patch", payload, sizeof(payload));
+
+    second_patch(pe, ".patch", payload, sizeof(payload));
     
     
     save_pe(pe, "output.exe");
