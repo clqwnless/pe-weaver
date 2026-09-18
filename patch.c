@@ -483,13 +483,7 @@ int add_section(PE *pe, const char *name, const uint8_t *data, size_t data_size)
     if (!new_file)
         return -1;
     
-    printf("new_raw: %u, new_raw_size: %u\n", new_raw, new_raw_size);
-    printf("allocted new_file, new_file_size: %zu, pe->file_size: %ld\n", new_file_size, pe->file_size);
-    
     memcpy(new_file, pe->file, pe->file_size);
-    
-    printf("copied from pe->file\n");
-    
     memcpy(new_file + new_raw, data, data_size);
 
     free(pe->file);
@@ -714,16 +708,32 @@ RelocUnit *find_riprel_inst(PE *pe, IMAGE_SECTION_HEADER *sec, uint8_t dispSizeB
     return NULL;
 }
 
+uint32_t calc_code_entrypoint(PE *pe)
+{
+    IMAGE_SECTION_HEADER *text = find_section(pe, ".text");
+    
+    if (text == NULL)
+        return 0;
+    
+    uint32_t text_offset = pe->nt->OptionalHeader.AddressOfEntryPoint - text->VirtualAddress;
+    
+    return text->PointerToRawData + text_offset;
+}
+
 uint8_t p2_capture_instructions(
     PE *pe,
-    IMAGE_SECTION_HEADER *sec,
+    size_t offset,
     size_t patch_inst_size,
     
     Instruction *insts_buffer,
     size_t buffer_size
 ) {
-    size_t offset   = sec->PointerToRawData;
-    size_t end      = offset + sec->SizeOfRawData;
+    IMAGE_SECTION_HEADER *text = find_section(pe, ".text");
+    
+    if (text == NULL)
+        return -1;
+    
+    size_t end      = offset + text->SizeOfRawData;
     uint32_t count  = 0;
     
     size_t instBytesCount = 0;
@@ -882,8 +892,14 @@ int second_patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t d
     
     /* check for errors and calc insts_bytes_size */
     
-    uint8_t  patch_inst_num = p2_capture_instructions(pe, text, sizeof(patch_inst_buffer), insts_buffer, sizeof(insts_buffer));
-    uint16_t insts_bytes_size = 0;;
+    uint32_t entrypoint = calc_code_entrypoint(pe);
+    
+    printf("entrypoint: %u\n", entrypoint);
+    
+    uint8_t  patch_inst_num = p2_capture_instructions(pe, entrypoint, sizeof(patch_inst_buffer), insts_buffer, sizeof(insts_buffer));
+    uint16_t insts_bytes_size = 0;
+    
+    printf("patch_inst_num: %u\n", patch_inst_num);
     
     for (uint8_t i = 0; i < patch_inst_num; i++)
     {
@@ -908,6 +924,8 @@ int second_patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t d
         insts_bytes_size += di->size;
     }
     
+    printf("insts_bytes_size: %u\n", insts_bytes_size);
+    
     /* copy the source data (inserted then to the new section) */
     
     size_t  new_section_data_size = data_size + insts_bytes_size + sizeof(patch_inst_buffer);
@@ -924,10 +942,10 @@ int second_patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t d
     
     // copy jmp instruction in order to return to the .text section
     
-    uint64_t target = text->PointerToRawData + sizeof(patch_inst_buffer); // afterPatchInstAddr
+    uint64_t target = entrypoint + sizeof(patch_inst_buffer); // afterPatchInstAddr
     int32_t  rel    = target - (get_next_raw_offset(pe) + data_size + insts_bytes_size + sizeof(patch_inst_buffer));
     
-    printf("target=%lld, rel=%d\n", target, rel);
+    printf(".patch return: target=%lld, rel=%d\n", target, rel);
     
     // +1 because of the dispOffset (displacement-offset)
     memcpy(patch_inst_buffer + 1, &rel, sizeof(rel));
@@ -942,7 +960,9 @@ int second_patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t d
     // calc rel32 (and create a jmp instruction)
     
     target = get_next_raw_offset(pe);
-    rel    = target - (text->PointerToRawData + sizeof(patch_inst_buffer));
+    rel    = target - (entrypoint + sizeof(patch_inst_buffer));
+    
+    printf(".text to .patch: target=%lld, rel=%d\n", target, rel);
     
     memcpy(patch_inst_buffer + 1, &rel, sizeof(rel));
     
@@ -952,42 +972,47 @@ int second_patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t d
        fill this space with nops (0x90 on x86/x64)
     */
     
-    for (uint16_t i = 0; i < insts_bytes_size; i++)
-        pe->file[text->PointerToRawData + i] = NOP_OPCODE;
     
-    memcpy(pe->file + text->PointerToRawData, patch_inst_buffer, sizeof(patch_inst_buffer));
+    for (uint16_t i = 0; i < insts_bytes_size; i++)
+        pe->file[entrypoint + i] = NOP_OPCODE;
+    memcpy(pe->file + entrypoint, patch_inst_buffer, sizeof(patch_inst_buffer));
+    
+    /*
+    printf("\nentrypoint (text): ");
+    
+    for (int i = 0; i < insts_bytes_size; i++)
+    {
+        printf("%02X ", pe->file[entrypoint + i]);
+    }
+    
+    printf("\n");
+    */
+    
+    
+    
+    
+    
+    
     
     add_section(pe, new_sec_name, new_section_data, new_section_data_size);
+
+    /* test */
+    
+    int32_t rel_test = *(int32_t*)(pe->file + entrypoint + 1);
+    uint64_t target_test = entrypoint + sizeof(patch_inst_buffer) + rel_test;
     
     
-    /*
-    printf("new_section_data: ");
-    for (int i = 0; i < (data_size + insts_bytes_size + sizeof(patch_inst_buffer)); i++)
-        printf("%02X ", new_section_data[i]);
+    printf("rel_test: %d, target_test: %llu\n", rel_test, target_test);
+    printf("target test: ");
+
+    for (int i = 0; i < new_section_data_size; i++)
+    {
+        printf("%02X ", pe->file[target_test + i]);
+    }
+
     printf("\n");
-    */
-    
-    
-    // calc rel32 addr 
-    
-    
-    
-    
-    
-    // memcpy(new_section_data + data_size + insts_bytes_size, 
-    
-    // memcpy(source_data, pe->file + insts_buffer[0].instOffset, insts_bytes_size);
-    
-    
-    
-    
-    
-    
-    /*
-    for (int i = 0; i < insts_bytes_size; i++)
-        printf("%02X ", source_data[i]);
-    printf("\n");
-    */
+
+
 
 cleanup:
 
@@ -997,8 +1022,6 @@ cleanup:
 
 
 /* clean efi certifiace and sections so that you can add another sections to the pe */
-
-#define EFI_TRANSIT_BLOB_SIZE 512
 
 int clean_efi_cert(PE *pe)
 {
@@ -1019,7 +1042,8 @@ int clean_efi_cert(PE *pe)
 
 
 int main(void) {
-    unsigned char payload[] = {0xEB, 0xFE};
+    //unsigned char payload[] = {0xEB, 0xFE};
+    unsigned char payload[] = {NOP_OPCODE};
 
     PE p1;
     PE *pe = &p1;
@@ -1027,7 +1051,7 @@ int main(void) {
     int ret;
     
     
-    if ((ret = load_pe("bootmgfw.efi", &p1)) != 0)
+    if ((ret = load_pe("cmd.exe", &p1)) != 0)
     {
         fprintf(stderr, "err: load_pe, err_code=%d\n", ret);
         return 1;
@@ -1040,13 +1064,14 @@ int main(void) {
     printf("patch ret: %d\n", ret);
     */
     
-    clean_efi_cert(pe);
+    //printf("faddr entrypoint: %u\n", calc_file_entry_point(pe));
     
-    add_section(pe, ".patch", payload, sizeof(payload));
+    //clean_efi_cert(pe);
+    //add_section(pe, ".patch", payload, sizeof(payload));
     
     
     
-    // second_patch(pe, ".patch", payload, sizeof(payload));
+    second_patch(pe, ".patch", payload, sizeof(payload));
     
     
     save_pe(pe, "output.exe");
