@@ -2,19 +2,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
 #include <distorm.h>
 #include <mnemonics.h>
 
 #include <inttypes.h>
 
-// #include "Zydis/Zydis.h"
-
 
 #define align_up(value, alignment) (((value) + (alignment) - 1) / (alignment)) * (alignment)
-#define calc_va(nt, sec, offset) (nt)->OptionalHeader.ImageBase + (sec)->VirtualAddress + (offset)
-
 #define calc_available_sections(free_space) (int)((free_space) / sizeof(IMAGE_SECTION_HEADER))
-
 #define bits_to_bytes(nbits) (int)((nbits) / 8)
 
 #define NOP_OPCODE 0x90
@@ -484,7 +480,7 @@ int add_section(PE *pe, const char *name, const uint8_t *data, size_t data_size)
     size_t new_file_size    = new_raw + new_raw_size;
     unsigned char *new_file = calloc(1, new_file_size);
     if (!new_file)
-        return -1;
+        return -2;
     
     memcpy(new_file, pe->file, pe->file_size);
     memcpy(new_file + new_raw, data, data_size);
@@ -764,7 +760,7 @@ uint8_t p2_capture_instructions(
     if (offset < sec->PointerToRawData)
         return -2;
     
-    size_t end      = sec->PointerToRawData + sec->SizeOfRawData;
+    size_t   end      = sec->PointerToRawData + sec->SizeOfRawData;
     uint32_t count  = 0;
     
     size_t instBytesCount = 0;
@@ -811,10 +807,63 @@ uint8_t p2_capture_instructions(
 }
 
 
+void _p2_shift_src_rels(PE *pe, IMAGE_SECTION_HEADER *sec, Instruction *instruction, uint8_t dispSize, DWORD dest_rva)
+{
+    _DInst *di = &instruction->di;
+    
+    uint8_t dispBytes  = bits_to_bytes(dispSize);
+    uint8_t dispOffset = di->size - dispBytes;
+    
+    uint8_t *relOffset = pe->file + instruction->instOffset + dispOffset;
+
+    int32_t rel;
+    
+    if (dispBytes == 1)
+        rel = *(int8_t*)relOffset;
+    else if (dispBytes == 2)
+        rel = *(int16_t*)relOffset;
+    else if(dispBytes == 4)
+        rel = *(int32_t*)relOffset;
+    
+    uint64_t oldTargetRVA = sec->VirtualAddress + ((instruction->instOffset + instruction->di.size) - sec->PointerToRawData) + rel;
+    int32_t newRel = oldTargetRVA - (dest_rva + di->size);
+    
+    /* shift */
+    
+    memcpy(relOffset, &newRel, dispBytes);
+}
+
+
+void p2_shift_src_rels(PE *pe, IMAGE_SECTION_HEADER *sec, Instruction *insts_buffer, size_t insts_num, DWORD dest_rva)
+{
+    uint32_t inst_offset = 0;
+    
+    for (size_t i = 0; i < insts_num; i++)
+    {
+        Instruction *instruction = &insts_buffer[i];
+        _DInst *di =&instruction->di;
+        
+        if (di->flags & FLAG_RIP_RELATIVE)
+            _p2_shift_src_rels(pe, sec, instruction, di->dispSize, dest_rva + inst_offset);
+        
+        for (uint8_t j = 0; j < di->opsNo; j++)
+        {
+            _Operand *op = &di->ops[j];
+            
+            if (op->type == O_PC)
+                _p2_shift_src_rels(pe, sec, instruction, op->size, dest_rva + inst_offset);
+        }
+        
+        inst_offset += di->size;
+    }
+}
+
 
 
 int second_patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t data_size)
 {
+    uint8_t ret = 0;
+    
     Instruction insts_buffer[8];
     uint8_t patch_inst_buffer[5] = {0xE9, 0x00, 0x00, 0x00, 0x00}; // jmp rel32
     
@@ -829,7 +878,11 @@ int second_patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t d
     uint8_t  patch_inst_num = p2_capture_instructions(pe, entrypoint_faddr, sizeof(patch_inst_buffer), insts_buffer, sizeof(insts_buffer));
     uint16_t insts_bytes_size = 0;
     
-
+    
+    
+    p2_shift_src_rels(pe, find_entrypoint_section(pe), insts_buffer, patch_inst_num, get_next_rva(pe));
+    
+    
     for (uint8_t i = 0; i < patch_inst_num; i++)
     {
         Instruction *instruction = &insts_buffer[i];
@@ -837,6 +890,7 @@ int second_patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t d
         
         //printf("di->opcode: %d, di->dispSize: %d, di->opsNo: %d\n", di->opcode, di->dispSize, di->opsNo);
         
+        /*
         if (di->flags & FLAG_RIP_RELATIVE)
         {
             fprintf(stderr, "rip-relative instructions at the beginning of the .text section are not supported\n");
@@ -852,11 +906,25 @@ int second_patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t d
                 return -2;
             }
         }
-        
+        */
         
         insts_bytes_size += di->size;
     }
-
+    
+    printf("insts_bytes_size: %d, patch_inst_num: %d\n", insts_bytes_size, patch_inst_num);
+    
+    Instruction *last_inst = &insts_buffer[patch_inst_num - 1];
+    size_t test_size       = (last_inst->instOffset + last_inst->di.size) - insts_buffer[0].instOffset;
+    
+    printf("test_size: %d\n", test_size);
+    
+    //printf("test: %d\n", insts_buffer[patch_inst_num - 1].instOffset +  - insts_buffer[0].instOffset);
+    
+    /*
+    for (int i = 0; i < insts_bytes_size; i++)
+        printf("%02X ", pe->file[insts_buffer[0].instOffset + i]);
+    printf("\n");
+    */
 
     /* copy the source data (inserted then to the new section) */
     
@@ -872,21 +940,17 @@ int second_patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t d
     // copy insts from the source
     memcpy(new_section_data + data_size, pe->file + insts_buffer[0].instOffset, insts_bytes_size);
     
-    
-    
     // jmp: .patch -> .text
     
     uint64_t target_rva = entrypoint_rva + insts_bytes_size;
     int32_t  rel        = target_rva - (get_next_rva(pe) + data_size + insts_bytes_size + sizeof(patch_inst_buffer));
 
-    printf(".patch -> .text, target_rva: %llu, rel: %d\n", target_rva, rel);
+    // printf(".patch -> .text, target_rva: %llu, rel: %d\n", target_rva, rel);
 
     // +1 because of the dispOffset (displacement-offset)
     memcpy(patch_inst_buffer + 1, &rel, sizeof(rel));
-    
     memcpy(new_section_data + data_size + insts_bytes_size, patch_inst_buffer, sizeof(patch_inst_buffer));
-    
-    
+
     // jmp: .text -> .patch
     
     // calc rel32 (and create a jmp instruction)
@@ -894,7 +958,7 @@ int second_patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t d
     target_rva = get_next_rva(pe);
     rel        = target_rva - (entrypoint_rva + sizeof(patch_inst_buffer)); // +insts_bytes_size because we want to skip NOPs
     
-    printf(".text -> .patch, target_rva: %llu, rel: %d\n", target_rva, rel);
+    //printf(".text -> .patch, target_rva: %llu, rel: %d\n", target_rva, rel);
     
     memcpy(patch_inst_buffer + 1, &rel, sizeof(rel));
     
@@ -907,54 +971,14 @@ int second_patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t d
     for (uint16_t i = 0; i < insts_bytes_size; i++)
         pe->file[entrypoint_faddr + i] = NOP_OPCODE;
     memcpy(pe->file + entrypoint_faddr, patch_inst_buffer, sizeof(patch_inst_buffer));
+    
 
-
-    add_section(pe, new_sec_name, new_section_data, new_section_data_size);
-    
-    /* test: .text -> .patch */
-    
-    /*
-    IMAGE_SECTION_HEADER *patch = find_section(pe, ".patch");
-    
-    int32_t rel_test     = *(int32_t*)(pe->file + entrypoint_faddr + 1);
-    uint64_t target_test = entrypoint_rva + sizeof(patch_inst_buffer) + rel_test;
-    
-    uint64_t target_faddr = patch->PointerToRawData + (target_test - patch->VirtualAddress);
-    
-    printf(".text -> .patch ");
-    for (int i = 0; i < new_section_data_size + 1; i++)
-        printf("%02X ", pe->file[target_faddr + i]);
-    printf("\n");
-    */
-    
-    IMAGE_SECTION_HEADER *patch = find_section(pe, ".patch");
-    IMAGE_SECTION_HEADER *text = find_section(pe, ".text");
-    
-    int32_t rel_test     = *(int32_t*)(pe->file + patch->PointerToRawData + new_section_data_size - sizeof(patch_inst_buffer) + 1);
-    uint64_t target_test = patch->VirtualAddress + new_section_data_size + rel_test;
-    
-    uint64_t target_faddr = text->PointerToRawData + (target_test - text->VirtualAddress);
-    
-    
-    printf("rel_test: %d, target_test: %llu, target_faddr: %llu\n", rel_test, target_test, target_faddr);
-    
-    printf(".patch -> .text ");
-    for (int i = 0; i < insts_bytes_size + 1; i++)
-        printf("%02X ", pe->file[target_faddr + i]);
-    printf("\n");
-    
-    
-    //printf("target_faddr=%llu\n", target_faddr);
-    //printf("target_test: %llu\n", target_test);
-    
-    
-    
-    
+    ret = add_section(pe, new_sec_name, new_section_data, new_section_data_size);   
 
 cleanup:
 
     free(new_section_data);
-    return 0;
+    return ret;
 }
 
 
@@ -979,8 +1003,8 @@ int clean_efi_cert(PE *pe)
 
 
 int main(void) {
-    uint8_t payload[] = {0xEB, 0xFE};
-    //uint8_t payload[] = {NOP_OPCODE};
+    //uint8_t payload[] = {0xEB, 0xFE};
+    uint8_t payload[] = {NOP_OPCODE};
 
     PE p1;
     PE *pe = &p1;
@@ -998,11 +1022,13 @@ int main(void) {
    
     
 
-    //second_patch(pe, ".patch", payload, sizeof(payload));
-    //save_pe(pe, "output.exe");
+    second_patch(pe, ".patch", payload, sizeof(payload));
+    save_pe(pe, "output.exe");
 
-    IMAGE_SECTION_HEADER *text = find_section(pe, ".text");    
-    collect_reloc_info(pe, text);
+
+
+    //IMAGE_SECTION_HEADER *text = find_section(pe, ".text");    
+    //collect_reloc_info(pe, text);
     
     return 0;
 }
