@@ -876,57 +876,21 @@ int second_patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t d
         return -999;
     
     uint8_t  patch_inst_num = p2_capture_instructions(pe, entrypoint_faddr, sizeof(patch_inst_buffer), insts_buffer, sizeof(insts_buffer));
-    uint16_t insts_bytes_size = 0;
-    
-    
+
+    /* define insts_bytes_size */
+
+    Instruction *last_inst    = &insts_buffer[patch_inst_num - 1];
+    uint16_t insts_bytes_size = (last_inst->instOffset + last_inst->di.size) - insts_buffer[0].instOffset;
     
     p2_shift_src_rels(pe, find_entrypoint_section(pe), insts_buffer, patch_inst_num, get_next_rva(pe));
+
+    /* copy the source data (inserted then to the new section) */
     
     
-    for (uint8_t i = 0; i < patch_inst_num; i++)
-    {
-        Instruction *instruction = &insts_buffer[i];
-        _DInst *di = &instruction->di;
-        
-        //printf("di->opcode: %d, di->dispSize: %d, di->opsNo: %d\n", di->opcode, di->dispSize, di->opsNo);
-        
-        /*
-        if (di->flags & FLAG_RIP_RELATIVE)
-        {
-            fprintf(stderr, "rip-relative instructions at the beginning of the .text section are not supported\n");
-            return -1;
-        }
-        
-        
-        for (uint8_t j = 0; j < di->opsNo; j++)
-        {
-            if (di->ops[j].type == O_PC)
-            {
-                fprintf(stderr, "O_PC instructions at the beginning of the .text section are not supported\n");
-                return -2;
-            }
-        }
-        */
-        
-        insts_bytes_size += di->size;
-    }
-    
-    printf("insts_bytes_size: %d, patch_inst_num: %d\n", insts_bytes_size, patch_inst_num);
-    
-    Instruction *last_inst = &insts_buffer[patch_inst_num - 1];
-    size_t test_size       = (last_inst->instOffset + last_inst->di.size) - insts_buffer[0].instOffset;
-    
-    printf("test_size: %d\n", test_size);
-    
-    //printf("test: %d\n", insts_buffer[patch_inst_num - 1].instOffset +  - insts_buffer[0].instOffset);
-    
-    /*
     for (int i = 0; i < insts_bytes_size; i++)
         printf("%02X ", pe->file[insts_buffer[0].instOffset + i]);
     printf("\n");
-    */
-
-    /* copy the source data (inserted then to the new section) */
+    
     
     size_t  new_section_data_size = data_size + insts_bytes_size + sizeof(patch_inst_buffer);
     uint8_t *new_section_data     = malloc(new_section_data_size);
@@ -982,14 +946,21 @@ cleanup:
 }
 
 
-/* clean efi certifiace and sections so that you can add another sections to the pe */
+/* clean certifiace-section so that you can add new sections to the pe */
 
-int clean_efi_cert(PE *pe)
+int clean_cert(PE *pe)
 {
     IMAGE_DATA_DIRECTORY *cert = &pe->nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_SECURITY];
     
+    printf("cert->VirtualAddress: %u\n", cert->VirtualAddress);
+    
+    
+    
     /* docs say: virtual address is file offset here */
     DWORD va = cert->VirtualAddress;
+    
+    if (va == 0)
+        return -1;
     
     cert->VirtualAddress = 0;
     cert->Size = 0;
@@ -998,7 +969,7 @@ int clean_efi_cert(PE *pe)
     
     pe->nt->OptionalHeader.SizeOfImage = pe->file_size;
     
-    // printf("va: %u\n", va);
+    return 0;
 }
 
 
@@ -1019,9 +990,10 @@ int main(void) {
     }
     
     printf("after load_pe\n");
-   
     
-
+    clean_cert(pe);
+    
+    
     second_patch(pe, ".patch", payload, sizeof(payload));
     save_pe(pe, "output.exe");
 
