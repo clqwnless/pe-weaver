@@ -483,7 +483,13 @@ int add_section(PE *pe, const char *name, const uint8_t *data, size_t data_size)
     if (!new_file)
         return -1;
     
+    printf("new_raw: %u, new_raw_size: %u\n", new_raw, new_raw_size);
+    printf("allocted new_file, new_file_size: %zu, pe->file_size: %ld\n", new_file_size, pe->file_size);
+    
     memcpy(new_file, pe->file, pe->file_size);
+    
+    printf("copied from pe->file\n");
+    
     memcpy(new_file + new_raw, data, data_size);
 
     free(pe->file);
@@ -990,6 +996,27 @@ cleanup:
 }
 
 
+/* clean efi certifiace and sections so that you can add another sections to the pe */
+
+#define EFI_TRANSIT_BLOB_SIZE 512
+
+int clean_efi_cert(PE *pe)
+{
+    IMAGE_DATA_DIRECTORY *cert = &pe->nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_SECURITY];
+    
+    /* docs say: virtual address is file offset here */
+    DWORD va = cert->VirtualAddress;
+    
+    cert->VirtualAddress = 0;
+    cert->Size = 0;
+    
+    pe->file_size = va;
+    
+    pe->nt->OptionalHeader.SizeOfImage = pe->file_size;
+    
+    // printf("va: %u\n", va);
+}
+
 
 int main(void) {
     unsigned char payload[] = {0xEB, 0xFE};
@@ -1000,18 +1027,26 @@ int main(void) {
     int ret;
     
     
-    if ((ret = load_pe("cmd.exe", &p1)) != 0)
+    if ((ret = load_pe("bootmgfw.efi", &p1)) != 0)
     {
         fprintf(stderr, "err: load_pe, err_code=%d\n", ret);
         return 1;
     }
+    
+    printf("after load_pe\n");
     
     /*
     ret = patch(&p1, ".patch", payload, sizeof(payload));
     printf("patch ret: %d\n", ret);
     */
     
-    second_patch(pe, ".patch", payload, sizeof(payload));
+    clean_efi_cert(pe);
+    
+    add_section(pe, ".patch", payload, sizeof(payload));
+    
+    
+    
+    // second_patch(pe, ".patch", payload, sizeof(payload));
     
     
     save_pe(pe, "output.exe");
