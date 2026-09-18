@@ -428,7 +428,7 @@ IMAGE_SECTION_HEADER *find_section_by_faddr(PE *pe, int64_t faddr)
     {
         IMAGE_SECTION_HEADER *s = &pe->sections[i];
         
-        if (faddr >= s->PointerToRawData)
+        if (faddr >= s->PointerToRawData && faddr < (s->PointerToRawData + s->SizeOfRawData))
         {
             return s;
         }
@@ -475,7 +475,7 @@ int add_section(PE *pe, const char *name, const uint8_t *data, size_t data_size)
     new_section->Misc.VirtualSize = new_virtual_size;
     new_section->PointerToRawData = new_raw;
     new_section->SizeOfRawData    = new_raw_size;
-    new_section->Characteristics  = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
+    new_section->Characteristics  = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ;
 
     pe->nt->FileHeader.NumberOfSections++;
     pe->nt->OptionalHeader.SizeOfImage = align_up(new_rva + new_virtual_size, pe->section_alignment);
@@ -723,7 +723,7 @@ IMAGE_SECTION_HEADER *find_entrypoint_section(PE *pe)
     {
         IMAGE_SECTION_HEADER *sec = &pe->sections[i];
         
-        if (ep >= sec->VirtualAddress && ep <= (sec->VirtualAddress + sec->Misc.VirtualSize))
+        if (ep >= sec->VirtualAddress && ep < (sec->VirtualAddress + sec->Misc.VirtualSize))
             return sec;
     }
     
@@ -897,25 +897,52 @@ int second_patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t d
        fill this space with nops (0x90 on x86/x64)
     */
     
-    printf("before: ");
-    for (int i = 0; i < insts_bytes_size + 2; i++)
-        printf("%02X ", pe->file[entrypoint_faddr + i - 1]);
-    printf("\n");
-    
-    
     for (uint16_t i = 0; i < insts_bytes_size; i++)
         pe->file[entrypoint_faddr + i] = NOP_OPCODE;
     memcpy(pe->file + entrypoint_faddr, patch_inst_buffer, sizeof(patch_inst_buffer));
 
 
-    printf("after:  ");
-    for (int i = 0; i < insts_bytes_size + 2; i++)
-        printf("%02X ", pe->file[entrypoint_faddr + i - 1]);
-    printf("\n");
-
-
     add_section(pe, new_sec_name, new_section_data, new_section_data_size);
-
+    
+    /* test: .text -> .patch */
+    
+    /*
+    IMAGE_SECTION_HEADER *patch = find_section(pe, ".patch");
+    
+    int32_t rel_test     = *(int32_t*)(pe->file + entrypoint_faddr + 1);
+    uint64_t target_test = entrypoint_rva + sizeof(patch_inst_buffer) + rel_test;
+    
+    uint64_t target_faddr = patch->PointerToRawData + (target_test - patch->VirtualAddress);
+    
+    printf(".text -> .patch ");
+    for (int i = 0; i < new_section_data_size + 1; i++)
+        printf("%02X ", pe->file[target_faddr + i]);
+    printf("\n");
+    */
+    
+    IMAGE_SECTION_HEADER *patch = find_section(pe, ".patch");
+    IMAGE_SECTION_HEADER *text = find_section(pe, ".text");
+    
+    int32_t rel_test     = *(int32_t*)(pe->file + patch->PointerToRawData + new_section_data_size - sizeof(patch_inst_buffer) + 1);
+    uint64_t target_test = patch->VirtualAddress + new_section_data_size + rel_test;
+    
+    uint64_t target_faddr = text->PointerToRawData + (target_test - text->VirtualAddress);
+    
+    
+    printf("rel_test: %d, target_test: %llu, target_faddr: %llu\n", rel_test, target_test, target_faddr);
+    
+    printf(".patch -> .text ");
+    for (int i = 0; i < insts_bytes_size + 1; i++)
+        printf("%02X ", pe->file[target_faddr + i]);
+    printf("\n");
+    
+    
+    //printf("target_faddr=%llu\n", target_faddr);
+    //printf("target_test: %llu\n", target_test);
+    
+    
+    
+    
 
 cleanup:
 
@@ -945,8 +972,8 @@ int clean_efi_cert(PE *pe)
 
 
 int main(void) {
-    //unsigned char payload[] = {0xEB, 0xFE};
-    uint8_t payload[] = {NOP_OPCODE};
+    uint8_t payload[] = {0xEB, 0xFE};
+    //uint8_t payload[] = {NOP_OPCODE};
 
     PE p1;
     PE *pe = &p1;
