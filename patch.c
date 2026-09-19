@@ -862,7 +862,7 @@ void p2_shift_src_rels(PE *pe, IMAGE_SECTION_HEADER *sec, Instruction *insts_buf
 
 int second_patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t data_size)
 {
-    uint8_t ret = 0;
+    int ret = 0;
     
     Instruction insts_buffer[8];
     uint8_t patch_inst_buffer[5] = {0xE9, 0x00, 0x00, 0x00, 0x00}; // jmp rel32
@@ -936,7 +936,6 @@ int second_patch(PE *pe, const char *new_sec_name, const uint8_t *data, size_t d
         pe->file[entrypoint_faddr + i] = NOP_OPCODE;
     memcpy(pe->file + entrypoint_faddr, patch_inst_buffer, sizeof(patch_inst_buffer));
     
-
     ret = add_section(pe, new_sec_name, new_section_data, new_section_data_size);   
 
 cleanup:
@@ -951,10 +950,6 @@ cleanup:
 int clean_cert(PE *pe)
 {
     IMAGE_DATA_DIRECTORY *cert = &pe->nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_SECURITY];
-    
-    printf("cert->VirtualAddress: %u\n", cert->VirtualAddress);
-    
-    
     
     /* docs say: virtual address is file offset here */
     DWORD va = cert->VirtualAddress;
@@ -974,8 +969,8 @@ int clean_cert(PE *pe)
 
 
 int main(void) {
-    //uint8_t payload[] = {0xEB, 0xFE};
-    uint8_t payload[] = {NOP_OPCODE};
+    uint8_t payload[] = {0xEB, 0xFE};
+    //uint8_t payload[] = {NOP_OPCODE};
 
     PE p1;
     PE *pe = &p1;
@@ -994,8 +989,12 @@ int main(void) {
     clean_cert(pe);
     
     
-    second_patch(pe, ".patch", payload, sizeof(payload));
-    save_pe(pe, "output.exe");
+    ret = second_patch(pe, ".patch", payload, sizeof(payload));
+    
+    if (ret == 0)
+    {
+        save_pe(pe, "output.exe");
+    }
 
 
 
